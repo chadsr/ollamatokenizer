@@ -36,6 +36,10 @@ jobs:
       - uses: golangci/golangci-lint-action@v9
         with:
           only-new-issues: true
+      - name: Run hadolint with reviewdog
+
+        uses: reviewdog/action-hadolint@v1.50.5
+
   test:
     strategy:
       matrix:
