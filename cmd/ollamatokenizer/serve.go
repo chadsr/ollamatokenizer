@@ -109,6 +109,10 @@ func handleTokenizeChat(c *gin.Context) {
 	respondWithTokens(c, tokens, err)
 }
 
+func handleHealth(c *gin.Context) {
+	c.JSON(http.StatusOK, gin.H{"status": "ok"})
+}
+
 var serveCmd = &cobra.Command{
 	Use:   "serve",
 	Short: "Start the tokenization HTTP server",
@@ -116,10 +120,11 @@ var serveCmd = &cobra.Command{
 tokens identical to a running Ollama instance.
 
 Endpoints:
-  POST /tokenize/generate  — tokenize a prompt (mirrors /api/generate)
-  POST /tokenize/chat      — tokenize messages (mirrors /api/chat)
+  GET  /health               - health check
+  POST /tokenize/generate    - tokenize a prompt (mirrors /api/generate)
+  POST /tokenize/chat        - tokenize messages (mirrors /api/chat)
 
-Both return: {"tokens": [...], "count": N}`,
+Both tokenization endpoints return: {"tokens": [...], "count": N}`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		port, _ := cmd.Flags().GetInt("port")
 
@@ -127,6 +132,7 @@ Both return: {"tokens": [...], "count": N}`,
 		r := gin.New()
 		r.Use(gin.Logger(), gin.Recovery())
 
+		r.GET("/health", handleHealth)
 		r.POST("/tokenize/generate", handleTokenizeGenerate)
 		r.POST("/tokenize/chat", handleTokenizeChat)
 

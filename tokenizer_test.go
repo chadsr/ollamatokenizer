@@ -69,14 +69,23 @@ const edgeCasePrompt = "Hello, 世界! \tWhat is 2+2?\nLine two.   Extra  spaces
 	"code: func main() { fmt.Println(\"hi\") }\n" +
 	"$100 @user #tag https://example.com/path?q=1&r=2"
 
-// TestTokenizeGenerateMatchesAPI verifies TokenizeGenerate produces tokens
-// identical to the Ollama /api/generate endpoint.
+// TestTokenizeGenerateMatchesAPI verifies TokenizeGenerate produces the same
+// tokens that the Ollama runner feeds into the LLM (including BOS when required).
+//
+// Two comparisons are made:
+//
+//  1. Exact count match against prompt_eval_count (the runner's token count).
+//     Our library now uses addSpecial=true, matching the runner exactly.
+//
+//  2. Token-by-token against the context array. The context field is produced
+//     by the server's r.Tokenize() which uses addSpecial=false (no BOS), so we
+//     compare our tokens[1:] (skipping BOS) against the context prefix.
 func TestTokenizeGenerateMatchesAPI(t *testing.T) {
 	ensureModelsDir(t)
 	apiURL := ollamaURL(t)
 	models := listModels(t)
 	if len(models) == 0 {
-		t.Skip("no models installed — set OLLAMA_MODELS and pull a model first")
+		t.Fatalf("no models installed - set OLLAMA_MODELS and pull a model first")
 	}
 
 	for _, modelName := range models {
@@ -105,22 +114,37 @@ func TestTokenizeGenerateMatchesAPI(t *testing.T) {
 					t.Fatalf("API /generate: %v", err)
 				}
 
-				// API's prompt_eval_count may include 1 extra prefill token, so compare our prefix.
-				if len(ourTokens) > len(apiTokens) {
-					t.Fatalf("our tokens (%d) longer than API context (%d)", len(ourTokens), len(apiTokens))
+				// Exact count match against prompt_eval_count.
+				if len(ourTokens) != promptEvalCount {
+					t.Errorf("token count mismatch: ours=%d API prompt_eval_count=%d",
+						len(ourTokens), promptEvalCount)
 				}
 
-				apiPromptTokens := apiTokens[:len(ourTokens)]
-				if !tokenSlicesEqual(ourTokens, apiPromptTokens) {
+				// Token-by-token comparison against the context array.
+				// The context field uses addSpecial=false (no BOS), so our tokens
+				// may have a BOS prefix that context doesn't. Skip it if present.
+				ourPromptTokens := ourTokens
+				if len(ourTokens) > 0 && len(apiTokens) > 0 && ourTokens[0] != int32(apiTokens[0]) {
+					// Our first token (BOS) doesn't match context's first token —
+					// compare from our second token onward.
+					ourPromptTokens = ourTokens[1:]
+				}
+
+				if len(ourPromptTokens) > len(apiTokens) {
+					t.Fatalf("our prompt tokens (%d) longer than API context (%d)", len(ourPromptTokens), len(apiTokens))
+				}
+
+				apiPromptTokens := apiTokens[:len(ourPromptTokens)]
+				if !tokenSlicesEqual(ourPromptTokens, apiPromptTokens) {
 					firstDiff := -1
-					for i := range ourTokens {
-						if int(ourTokens[i]) != apiTokens[i] {
+					for i := range ourPromptTokens {
+						if int(ourPromptTokens[i]) != apiTokens[i] {
 							firstDiff = i
 							break
 						}
 					}
-					t.Errorf("token mismatch at position %d:\n  ours: %v\n  API:  %v\n  (our len=%d, API prompt_eval_count=%d, API total=%d)",
-						firstDiff, ourTokens, apiPromptTokens, len(ourTokens), promptEvalCount, len(apiTokens))
+					t.Errorf("token mismatch at position %d:\n  ours: %v\n  API:  %v\n  (our len=%d, API prompt_eval_count=%d, API context len=%d)",
+						firstDiff, ourPromptTokens, apiPromptTokens, len(ourTokens), promptEvalCount, len(apiTokens))
 				}
 			})
 		}
@@ -170,11 +194,11 @@ func TestTokenizeChatMatchesAPI(t *testing.T) {
 					t.Fatalf("API /api/chat: %v", err)
 				}
 
-				// API's prompt_eval_count may include 1 extra prefill token.
-				diff := apiCount - len(ourTokens)
-				if diff < 0 || diff > 1 {
-					t.Errorf("token count mismatch: ours=%d API=%d (diff=%d)",
-						len(ourTokens), apiCount, diff)
+				// Exact count match against prompt_eval_count.
+				// Both the runner and our library use addSpecial=true.
+				if len(ourTokens) != apiCount {
+					t.Errorf("token count mismatch: ours=%d API=%d",
+						len(ourTokens), apiCount)
 				}
 			})
 		}

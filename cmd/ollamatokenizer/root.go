@@ -10,10 +10,9 @@ import (
 var rootCmd = &cobra.Command{
 	Use:   "ollamatokenizer",
 	Short: "Tokenization server using Ollama's tokenizer implementations",
-	Long: `ollamatokenizer provides tokenization that is 1:1 with a running Ollama instance.
-It loads only tokenizer metadata from GGUF files — no model weights and no inference.
+	Long: `Tokenization server using Ollama's tokenizer implementations
 
-Set OLLAMA_MODELS to your model directory (e.g. /var/lib/ollama).`,
+Set OLLAMA_MODELS to your ollama model directory (e.g. /var/lib/ollama).`,
 }
 
 func main() {
