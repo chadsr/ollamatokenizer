@@ -18,7 +18,7 @@ GOFLAGS ?=
 BUILD_DIR := bin
 
 # Extract the pinned ollama version from go.mod
-OLLAMA_VERSION := $(shell grep 'require github.com/ollama/ollama' go.mod | awk '{print $$3}')
+OLLAMA_VERSION := $(shell grep 'github.com/ollama/ollama' go.mod | awk '{print $$2}')
 
 # Paths into the Go module cache where CGO expects the vendor headers
 MODCACHE := $(shell $(GO) env GOMODCACHE)
@@ -67,7 +67,7 @@ endif
 		$(GO) mod download github.com/ollama/ollama@$(OLLAMA_VERSION); \
 	fi
 	@if [ -f "$(LLAMA_VENDOR)/nlohmann/json.hpp" ]; then \
-		echo "Vendor headers already present for ollama v$(OLLAMA_VERSION)"; \
+		echo "Vendor headers already present for ollama $(OLLAMA_VERSION)"; \
 	fi
 
 # tidy resolves dependencies and generates go.sum
