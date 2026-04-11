@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"log"
 	"net/http"
-	"strings"
 	"sync"
 
 	"github.com/chadsr/ollamatokenizer"
@@ -52,8 +51,6 @@ func respondWithTokens(c *gin.Context, tokens []int32, err error) {
 	if err != nil {
 		if errors.Is(err, ollamatokenizer.ErrNotImplemented) {
 			c.JSON(http.StatusNotImplemented, gin.H{"error": err.Error()})
-		} else if strings.Contains(err.Error(), "not found") {
-			c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
 		} else {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		}
