@@ -16,8 +16,8 @@ import (
 	"github.com/ollama/ollama/model/renderers"
 	"github.com/ollama/ollama/server"
 	"github.com/ollama/ollama/template"
-	"github.com/ollama/ollama/tokenizer"
 	"github.com/ollama/ollama/thinking"
+	"github.com/ollama/ollama/tokenizer"
 	modelname "github.com/ollama/ollama/types/model"
 )
 
@@ -265,7 +265,7 @@ func filterThinkTags(msgs []api.Message, m *server.Model) []api.Message {
 		for i, msg := range msgs {
 			if msg.Role == "assistant" && i < finalUserIndex {
 				thinkingState := &thinking.Parser{
-					OpeningTag: "<tool_call>think>",
+					OpeningTag: "<think>",
 					ClosingTag: "</think>",
 				}
 				_, content := thinkingState.AddContent(msg.Content)

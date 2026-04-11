@@ -66,12 +66,12 @@ var thinkModes = []struct {
 var testMessages = []api.Message{
 	{Role: "system", Content: "You are a helpful assistant. Respond concisely. Use 中文 when asked."},
 	{Role: "user", Content: "Hello, 世界! What is 2+2?"},
-	{Role: "assistant", Content: "<thinkLet me calculate 2+2</think2+2=4. The answer is 4."},
+	{Role: "assistant", Content: "<think>Let me calculate 2+2</think>2+2=4. The answer is 4."},
 	{Role: "user", Content: "café résumé naïve — \"quotes\" 'apos' <html> &amp;\n" +
 		"emoji: 🌍🤖✅\n" +
 		"code: func main() { fmt.Println(\"hi\") }\n" +
 		"$100 @user #tag https://example.com/path?q=1&r=2"},
-	{Role: "assistant", Content: "<thinkProcessing the complex input</thinkGot it! Here's a summary:\n" +
+	{Role: "assistant", Content: "<think>Processing the complex input</think>Got it! Here's a summary:\n" +
 		"\tLine one.\n" +
 		"   Extra   spaces.\n" +
 		"The URL is https://example.com/path?q=1&r=2"},
