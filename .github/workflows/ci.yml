@@ -12,6 +12,7 @@ permissions:
 
 env:
   CGO_ENABLED: "1"
+  CGO_CPPFLAGS: "-I${{ github.workspace }}/include"
 
 jobs:
   lint:
