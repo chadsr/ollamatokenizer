@@ -23,6 +23,11 @@ import (
 
 const errPfx = "ollamatokenizer: "
 
+// ErrNotImplemented is returned when a request uses options that this library
+// does not support. Callers can check for this error to distinguish between
+// unsupported options and other failures.
+var ErrNotImplemented = fmt.Errorf("not implemented")
+
 // Tokenizer wraps an Ollama tokenizer for a specific model.
 type Tokenizer struct {
 	engine tokenizer.Tokenizer // native Ollama engine (pure Go)
@@ -185,7 +190,30 @@ func (t *Tokenizer) renderPrompt(msgs []api.Message, tools []api.Tool, think *ap
 // For prompts within the context window, the rendered output is identical.
 // The server also only includes m.Messages when req.Context == nil (deprecated field):
 // https://github.com/ollama/ollama/blob/v0.20.5/server/routes.go#L463-L465
+//
+// Unsupported options that trigger ErrNotImplemented:
+//   - Suffix: insert/fill-in-the-middle mode
+//   - Template: custom template override
+//   - Raw: raw mode (bypasses template rendering)
+//   - Context: deprecated conversation context field
+//   - Images: multimodal image attachments
 func (t *Tokenizer) TokenizeGenerate(req api.GenerateRequest) ([]int32, error) {
+	if req.Suffix != "" {
+		return nil, fmt.Errorf(errPfx+"suffix (insert mode) is not implemented: %w", ErrNotImplemented)
+	}
+	if req.Template != "" {
+		return nil, fmt.Errorf(errPfx+"template override is not implemented: %w", ErrNotImplemented)
+	}
+	if req.Raw {
+		return nil, fmt.Errorf(errPfx+"raw mode is not implemented: %w", ErrNotImplemented)
+	}
+	if len(req.Context) > 0 {
+		return nil, fmt.Errorf(errPfx+"context (deprecated) is not implemented: %w", ErrNotImplemented)
+	}
+	if len(req.Images) > 0 {
+		return nil, fmt.Errorf(errPfx+"images (multimodal) is not implemented: %w", ErrNotImplemented)
+	}
+
 	var msgs []api.Message
 	if req.System != "" {
 		msgs = append(msgs, api.Message{Role: "system", Content: req.System})

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -49,7 +50,9 @@ func getTokenizer(model string) (*ollamatokenizer.Tokenizer, error) {
 
 func respondWithTokens(c *gin.Context, tokens []int32, err error) {
 	if err != nil {
-		if strings.Contains(err.Error(), "not found") {
+		if errors.Is(err, ollamatokenizer.ErrNotImplemented) {
+			c.JSON(http.StatusNotImplemented, gin.H{"error": err.Error()})
+		} else if strings.Contains(err.Error(), "not found") {
 			c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
 		} else {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
