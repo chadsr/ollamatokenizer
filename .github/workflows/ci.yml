@@ -30,6 +30,9 @@ jobs:
             go.sum
             Makefile
 
+      - name: Download C++ headers
+        run: make update-headers
+
       - name: check that 'go mod tidy' is clean
         run: go mod tidy --diff || (echo "Please run 'go mod tidy'." && exit 1)
 
@@ -68,6 +71,9 @@ jobs:
 
       - name: Pull tinyllama
         run: ollama pull tinyllama:1.1b
+
+      - name: Download C++ headers
+        run: make update-headers
 
       - name: go test
         run: go test -v

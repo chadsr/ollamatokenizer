@@ -47,7 +47,7 @@ update-headers: $(HEADER_FILES)
 tidy:
 	$(GO) mod tidy $(GOFLAGS)
 
-build:
+build: $(HEADER_FILES)
 	@mkdir -p $(BUILD_DIR)
 	CGO_ENABLED=1 CGO_CPPFLAGS="$(CGO_CPPFLAGS)" $(GO) build $(GOFLAGS) -o $(BUILD_DIR)/ollamatokenizer ./cmd/ollamatokenizer
 
