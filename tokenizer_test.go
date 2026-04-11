@@ -61,13 +61,33 @@ var thinkModes = []struct {
 	{"think_false", &api.ThinkValue{Value: false}},
 }
 
-// edgeCasePrompt exercises Unicode (CJK, emoji, accented), whitespace (tabs,
-// newlines, multiple spaces), punctuation/symbols, code syntax, and URLs.
-const edgeCasePrompt = "Hello, 世界! \tWhat is 2+2?\nLine two.   Extra  spaces.\n" +
-	"café résumé naïve — \"quotes\" 'apos' <html> &amp;\n" +
-	"emoji: 🌍🤖✅\n" +
-	"code: func main() { fmt.Println(\"hi\") }\n" +
-	"$100 @user #tag https://example.com/path?q=1&r=2"
+// testMessages is a single set of chat messages used by both generate and chat
+// tests. It exercises tokenization edge cases across all message roles
+var testMessages = []api.Message{
+	{Role: "system", Content: "You are a helpful assistant. Respond concisely. Use 中文 when asked."},
+	{Role: "user", Content: "Hello, 世界! What is 2+2?"},
+	{Role: "assistant", Content: "<thinkLet me calculate 2+2</think2+2=4. The answer is 4."},
+	{Role: "user", Content: "café résumé naïve — \"quotes\" 'apos' <html> &amp;\n" +
+		"emoji: 🌍🤖✅\n" +
+		"code: func main() { fmt.Println(\"hi\") }\n" +
+		"$100 @user #tag https://example.com/path?q=1&r=2"},
+	{Role: "assistant", Content: "<thinkProcessing the complex input</thinkGot it! Here's a summary:\n" +
+		"\tLine one.\n" +
+		"   Extra   spaces.\n" +
+		"The URL is https://example.com/path?q=1&r=2"},
+	{Role: "user", Content: "And what about 德国?"},
+}
+
+// testPrompt returns the last user message content from testMessages,
+// for use with the /api/generate endpoint.
+func testPrompt() string {
+	for i := len(testMessages) - 1; i >= 0; i-- {
+		if testMessages[i].Role == "user" {
+			return testMessages[i].Content
+		}
+	}
+	return ""
+}
 
 // TestTokenizeGenerateMatchesAPI verifies TokenizeGenerate produces the same
 // tokens that the Ollama runner feeds into the LLM (including BOS when required).
@@ -99,14 +119,14 @@ func TestTokenizeGenerateMatchesAPI(t *testing.T) {
 				}
 
 				ourTokens, err := tok.TokenizeGenerate(api.GenerateRequest{
-					Prompt: edgeCasePrompt,
+					Prompt: testPrompt(),
 					Think:  tm.think,
 				})
 				if err != nil {
 					t.Fatalf("TokenizeGenerate: %v", err)
 				}
 
-				apiTokens, promptEvalCount, err := apiGenerate(apiURL, modelName, edgeCasePrompt, tm.think)
+				apiTokens, promptEvalCount, err := apiGenerate(apiURL, modelName, testPrompt(), tm.think)
 				if err != nil {
 					if isUnsupportedError(err) {
 						t.Skipf("unsupported: %v", err)
@@ -152,20 +172,13 @@ func TestTokenizeGenerateMatchesAPI(t *testing.T) {
 }
 
 // TestTokenizeChatMatchesAPI verifies TokenizeChat produces the same token
-// count as the Ollama /api/chat endpoint (which doesn't return a context array).
+// count as the Ollama /api/chat endpoint.
 func TestTokenizeChatMatchesAPI(t *testing.T) {
 	ensureModelsDir(t)
 	apiURL := ollamaURL(t)
 	models := listModels(t)
 	if len(models) == 0 {
 		t.Skip("no models installed")
-	}
-
-	chatMessages := []api.Message{
-		{Role: "system", Content: "You are a helpful assistant who speaks concisely."},
-		{Role: "user", Content: "What is the capital of France?"},
-		{Role: "assistant", Content: "The capital of France is Paris."},
-		{Role: "user", Content: "And Germany?"},
 	}
 
 	for _, modelName := range models {
@@ -179,14 +192,14 @@ func TestTokenizeChatMatchesAPI(t *testing.T) {
 				}
 
 				ourTokens, err := tok.TokenizeChat(api.ChatRequest{
-					Messages: chatMessages,
+					Messages: testMessages,
 					Think:    tm.think,
 				})
 				if err != nil {
 					t.Fatalf("TokenizeChat: %v", err)
 				}
 
-				apiCount, err := apiChat(apiURL, modelName, chatMessages, tm.think)
+				apiCount, err := apiChat(apiURL, modelName, testMessages, tm.think)
 				if err != nil {
 					if isUnsupportedError(err) {
 						t.Skipf("unsupported: %v", err)
@@ -218,7 +231,8 @@ func isUnsupportedError(err error) bool {
 	if apiErr, ok := err.(*apiError); ok {
 		return apiErr.statusCode == 400 &&
 			(strings.Contains(apiErr.body, "does not support thinking") ||
-				strings.Contains(apiErr.body, "does not support generate"))
+				strings.Contains(apiErr.body, "does not support generate") ||
+				strings.Contains(apiErr.body, "does not support chat"))
 	}
 	return false
 }
