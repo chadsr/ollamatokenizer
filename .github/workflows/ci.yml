@@ -1,0 +1,73 @@
+name: CI
+on:
+  pull_request:
+    branches:
+      - main
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+env:
+  CGO_ENABLED: "1"
+  CGO_CPPFLAGS: "-I${{ github.workspace }}/include"
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: "go.mod"
+          cache-dependency-path: |
+            go.sum
+            Makefile
+
+      - name: check that 'go mod tidy' is clean
+        run: go mod tidy --diff || (echo "Please run 'go mod tidy'." && exit 1)
+
+      - uses: golangci/golangci-lint-action@v9
+        with:
+          only-new-issues: true
+      - name: Run hadolint with reviewdog
+
+        uses: reviewdog/action-hadolint@v1.50.5
+
+  test:
+    strategy:
+      matrix:
+        os: [ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    needs: lint
+    env:
+      OLLAMA_MODELS: "/home/runner/.ollama"
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: "go.mod"
+          cache-dependency-path: |
+            go.sum
+            Makefile
+
+      - uses: actions/cache@v5
+        with:
+          path: ${{ env.OLLAMA_MODELS }}
+          key: ${{ runner.os }}-ollama
+
+      - name: Setup Ollama
+        uses: ai-action/setup-ollama@v2
+
+      - name: Pull tinyllama
+        run: ollama pull tinyllama:1.1b
+
+      - name: go test
+        run: go test -v
