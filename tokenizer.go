@@ -17,6 +17,7 @@ import (
 	"github.com/ollama/ollama/server"
 	"github.com/ollama/ollama/template"
 	"github.com/ollama/ollama/tokenizer"
+	"github.com/ollama/ollama/thinking"
 	modelname "github.com/ollama/ollama/types/model"
 )
 
@@ -247,6 +248,34 @@ func (t *Tokenizer) processTools(tools []api.Tool, msgs []api.Message, think *ap
 	return processedTools
 }
 
+// filterThinkTags strips thinking content from assistant messages for qwen3 and deepseek-r1 models.
+// Mirrors the server's filterThinkTags exactly:
+// https://github.com/ollama/ollama/blob/v0.20.5/server/routes.go#L2642-L2668
+//
+// Uses the thinking.Parser directly from Ollama to strip <think>...</think> content.
+func filterThinkTags(msgs []api.Message, m *server.Model) []api.Message {
+	if m.Config.ModelFamily == "qwen3" || modelname.ParseName(m.Name).Model == "deepseek-r1" {
+		finalUserIndex := -1
+		for i, msg := range msgs {
+			if msg.Role == "user" {
+				finalUserIndex = i
+			}
+		}
+
+		for i, msg := range msgs {
+			if msg.Role == "assistant" && i < finalUserIndex {
+				thinkingState := &thinking.Parser{
+					OpeningTag: "<tool_call>think>",
+					ClosingTag: "</think>",
+				}
+				_, content := thinkingState.AddContent(msg.Content)
+				msgs[i].Content = content
+			}
+		}
+	}
+	return msgs
+}
+
 // TokenizeChat tokenizes messages matching /api/chat.
 // Uses Messages, Tools, and Think from api.ChatRequest.
 //
@@ -259,18 +288,14 @@ func (t *Tokenizer) processTools(tools []api.Tool, msgs []api.Message, think *ap
 // The server then calls chatPrompt which calls renderPrompt:
 // https://github.com/ollama/ollama/blob/v0.20.5/server/routes.go#L2347
 // https://github.com/ollama/ollama/blob/v0.20.5/server/prompt.go#L23-L113
-//
-// Note: the server calls filterThinkTags for qwen3/deepseek-r1 models to strip thinking
-// content from assistant messages before the final user message:
-// https://github.com/ollama/ollama/blob/v0.20.5/server/routes.go#L2321
-// https://github.com/ollama/ollama/blob/v0.20.5/server/routes.go#L2642-L2668
-// Our library does not replicate this filtering, which may cause token count differences
-// for those specific models when assistant messages contain thinking content.
 func (t *Tokenizer) TokenizeChat(req api.ChatRequest) ([]int32, error) {
 	msgs := append(t.model.Messages, req.Messages...)
 	if len(req.Messages) > 0 && req.Messages[0].Role != "system" && t.model.System != "" {
 		msgs = append([]api.Message{{Role: "system", Content: t.model.System}}, msgs...)
 	}
+
+	// https://github.com/ollama/ollama/blob/v0.20.5/server/routes.go#L2321
+	msgs = filterThinkTags(msgs, t.model)
 
 	processedTools := t.processTools(req.Tools, msgs, req.Think)
 
