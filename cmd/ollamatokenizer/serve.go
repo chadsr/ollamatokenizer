@@ -109,6 +109,26 @@ func handleTokenizeChat(c *gin.Context) {
 	respondWithTokens(c, tokens, err)
 }
 
+func handleTokenize(c *gin.Context) {
+	var req struct {
+		Model string `json:"model" binding:"required"`
+		Text  string `json:"text" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("invalid request: %v", err)})
+		return
+	}
+
+	tok, err := getTokenizer(req.Model)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
+		return
+	}
+
+	tokens, err := tok.Tokenize(req.Text, false, false)
+	respondWithTokens(c, tokens, err)
+}
+
 func handleHealth(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"status": "ok"})
 }
@@ -121,6 +141,7 @@ tokens identical to a running Ollama instance.
 
 Endpoints:
   GET  /health               - health check
+  POST /tokenize             - tokenize raw text (no template)
   POST /tokenize/generate    - tokenize a prompt (mirrors /api/generate)
   POST /tokenize/chat        - tokenize messages (mirrors /api/chat)
 
@@ -133,6 +154,7 @@ Both tokenization endpoints return: {"tokens": [...], "count": N}`,
 		r.Use(gin.Logger(), gin.Recovery())
 
 		r.GET("/health", handleHealth)
+		r.POST("/tokenize", handleTokenize)
 		r.POST("/tokenize/generate", handleTokenizeGenerate)
 		r.POST("/tokenize/chat", handleTokenizeChat)
 

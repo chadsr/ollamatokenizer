@@ -51,6 +51,36 @@ Response:
 }
 ```
 
+### POST /tokenize
+
+Tokenize raw text into token IDs. No chat template or system prompt is
+applied — the text is encoded directly using the model's vocabulary.
+This is useful when you need the raw token count for a piece of text
+without any prompt formatting.
+
+Request body:
+
+```json
+{
+  "model": "llama3.2:3b",
+  "text": "Why is the sky blue?"
+}
+```
+
+| Field   | Type   | Required | Description                        |
+|---------|--------|----------|------------------------------------|
+| `model` | string | yes      | Ollama model name (must be pulled) |
+| `text`  | string | yes      | The text to tokenize               |
+
+Response:
+
+```json
+{
+  "tokens": [1, 2998, 338, 278, 6507, 18561, 29973],
+  "count": 7
+}
+```
+
 ### POST /tokenize/generate
 
 Tokenize a prompt using the same tokenization as Ollama's `/api/generate`

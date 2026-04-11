@@ -88,12 +88,11 @@ func (t *Tokenizer) hasThinking() bool {
 }
 
 // Tokenize encodes text into token IDs without applying any chat template.
-// Matches the runner's tokenization exactly, including BOS/EOS special tokens
-// when the model's vocabulary requires them (addSpecial=true).
 //
-// The runner tokenizes the first text part with addSpecial=true:
-//   - llama.cpp path:  https://github.com/ollama/ollama/blob/v0.20.5/runner/llamarunner/runner.go#L211
-//   - Ollama engine:   https://github.com/ollama/ollama/blob/v0.20.5/runner/ollamarunner/runner.go#L246
+// addSpecial controls whether BOS/EOS special tokens are prepended/appended
+// when the model's vocabulary requires them (e.g. AddBOS=true in GGUF metadata).
+// parseSpecial controls whether special token strings in the text (e.g. <|im_start|>)
+// are parsed into their corresponding token IDs.
 //
 // When addSpecial=true, BOS is prepended if the model's vocabulary has AddBOS=true:
 //   - llama.cpp: llama_tokenize C function checks add_bos_token GGUF metadata
@@ -101,10 +100,10 @@ func (t *Tokenizer) hasThinking() bool {
 //     https://github.com/ollama/ollama/blob/v0.20.5/tokenizer/vocabulary.go#L46-L66
 //
 // EOS is appended if AddEOS=true (rare; most models only set AddBOS).
-func (t *Tokenizer) Tokenize(text string) ([]int32, error) {
+func (t *Tokenizer) Tokenize(text string, addSpecial, parseSpecial bool) ([]int32, error) {
 	if t.engine != nil {
 		// https://github.com/ollama/ollama/blob/v0.20.5/runner/ollamarunner/runner.go#L246
-		tokens, err := t.engine.Encode(text, true)
+		tokens, err := t.engine.Encode(text, addSpecial)
 		if err != nil {
 			return nil, fmt.Errorf(errPfx+"tokenize: %w", err)
 		}
@@ -112,7 +111,7 @@ func (t *Tokenizer) Tokenize(text string) ([]int32, error) {
 	}
 
 	// https://github.com/ollama/ollama/blob/v0.20.5/runner/llamarunner/runner.go#L211
-	tokens, err := t.llama.Tokenize(text, true, true)
+	tokens, err := t.llama.Tokenize(text, addSpecial, parseSpecial)
 	if err != nil {
 		return nil, fmt.Errorf(errPfx+"tokenize: %w", err)
 	}
@@ -203,7 +202,7 @@ func (t *Tokenizer) TokenizeGenerate(req api.GenerateRequest) ([]int32, error) {
 		return nil, err
 	}
 
-	return t.Tokenize(rendered)
+	return t.Tokenize(rendered, true, true)
 }
 
 // shouldUseHarmony mirrors the server's harmony detection heuristic exactly:
@@ -305,5 +304,5 @@ func (t *Tokenizer) TokenizeChat(req api.ChatRequest) ([]int32, error) {
 		return nil, err
 	}
 
-	return t.Tokenize(rendered)
+	return t.Tokenize(rendered, true, true)
 }
