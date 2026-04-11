@@ -33,7 +33,7 @@ func listModels(t *testing.T) []string {
 func ensureModelsDir(t *testing.T) {
 	t.Helper()
 	if os.Getenv("OLLAMA_MODELS") == "" {
-		os.Setenv("OLLAMA_MODELS", defaultModelsDir)
+		t.Setenv("OLLAMA_MODELS", defaultModelsDir)
 	}
 }
 
