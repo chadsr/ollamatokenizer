@@ -8,6 +8,7 @@ import (
 	"slices"
 
 	"github.com/ollama/ollama/api"
+	"github.com/ollama/ollama/envconfig"
 	fsggml "github.com/ollama/ollama/fs/ggml"
 	"github.com/ollama/ollama/llama"
 	"github.com/ollama/ollama/model"
@@ -24,8 +25,7 @@ import (
 const errPfx = "ollamatokenizer: "
 
 // ErrNotImplemented is returned when a request uses options that this library
-// does not support. Callers can check for this error to distinguish between
-// unsupported options and other failures.
+// does not support.
 var ErrNotImplemented = fmt.Errorf("not implemented")
 
 // Tokenizer wraps an Ollama tokenizer for a specific model.
@@ -37,9 +37,7 @@ type Tokenizer struct {
 
 // New creates a Tokenizer for the given model name (e.g. "llama3.2:3b").
 // The model must have been pulled via `ollama pull`.
-//
-// Uses the same tokenizer selection as the Ollama server:
-// OllamaEngineRequired() → native Go; otherwise → llama.cpp.
+// https://github.com/ollama/ollama/blob/v0.20.5/llm/server.go#L144-L164
 func New(name string) (*Tokenizer, error) {
 	// https://github.com/ollama/ollama/blob/v0.20.5/server/images.go#L297-L395
 	m, err := server.GetModel(name)
@@ -49,8 +47,6 @@ func New(name string) (*Tokenizer, error) {
 
 	t := &Tokenizer{model: m}
 
-	// Mirrors: https://github.com/ollama/ollama/blob/v0.20.5/llm/server.go#L144-L164
-	// envconfig.NewEngine() defaults to false; OllamaEngineRequired() is the deciding factor.
 	f, err := os.Open(m.ModelPath)
 	if err != nil {
 		return nil, fmt.Errorf(errPfx+"open model file: %w", err)
@@ -62,16 +58,19 @@ func New(name string) (*Tokenizer, error) {
 		return nil, fmt.Errorf(errPfx+"decode GGUF metadata: %w", err)
 	}
 
-	if ggmlFile.KV().OllamaEngineRequired() {
+	// https://github.com/ollama/ollama/blob/v0.20.5/llm/server.go#L148
+	if envconfig.NewEngine() || ggmlFile.KV().OllamaEngineRequired() {
 		// https://github.com/ollama/ollama/blob/v0.20.5/llm/server.go#L150
 		tp, err := model.NewTextProcessor(m.ModelPath)
 		if err != nil {
-			return nil, fmt.Errorf(errPfx+"native tokenizer for %q: %w", name, err)
+			// https://github.com/ollama/ollama/blob/v0.20.5/llm/server.go#L154-L158
+			goto llamaFallback
 		}
 		t.engine = tp
 		return t, nil
 	}
 
+llamaFallback:
 	// https://github.com/ollama/ollama/blob/v0.20.5/llm/server.go#L160
 	llamaModel, err := llama.LoadModelFromFile(m.ModelPath, llama.ModelParams{VocabOnly: true})
 	if err != nil {
@@ -82,32 +81,18 @@ func New(name string) (*Tokenizer, error) {
 }
 
 // hasThinking reports whether the model supports thinking.
-// Mirrors the server's capability check:
 // https://github.com/ollama/ollama/blob/v0.20.5/server/routes.go#L396
-// Capabilities() is defined at:
-// https://github.com/ollama/ollama/blob/v0.20.5/server/images.go#L80-L155
-// Thinking capability is appended at:
-// https://github.com/ollama/ollama/blob/v0.20.5/server/images.go#L149-L155
 func (t *Tokenizer) hasThinking() bool {
 	return slices.Contains(t.model.Capabilities(), modelname.CapabilityThinking)
 }
 
 // Tokenize encodes text into token IDs without applying any chat template.
-//
-// addSpecial controls whether BOS/EOS special tokens are prepended/appended
-// when the model's vocabulary requires them (e.g. AddBOS=true in GGUF metadata).
-// parseSpecial controls whether special token strings in the text (e.g. <|im_start|>)
-// are parsed into their corresponding token IDs.
-//
-// When addSpecial=true, BOS is prepended if the model's vocabulary has AddBOS=true:
-//   - llama.cpp: llama_tokenize C function checks add_bos_token GGUF metadata
-//   - Ollama engine: vocab.addSpecials() checks v.AddBOS
-//     https://github.com/ollama/ollama/blob/v0.20.5/tokenizer/vocabulary.go#L46-L66
-//
-// EOS is appended if AddEOS=true (rare; most models only set AddBOS).
+// addSpecial: prepend BOS/append EOS if the model's vocab requires it (AddBOS/AddEOS GGUF metadata).
+// parseSpecial: parse special token strings in text (e.g. <|im_start|>) into token IDs.
+// https://github.com/ollama/ollama/blob/v0.20.5/runner/ollamarunner/runner.go#L246
+// https://github.com/ollama/ollama/blob/v0.20.5/runner/llamarunner/runner.go#L211
 func (t *Tokenizer) Tokenize(text string, addSpecial, parseSpecial bool) ([]int32, error) {
 	if t.engine != nil {
-		// https://github.com/ollama/ollama/blob/v0.20.5/runner/ollamarunner/runner.go#L246
 		tokens, err := t.engine.Encode(text, addSpecial)
 		if err != nil {
 			return nil, fmt.Errorf(errPfx+"tokenize: %w", err)
@@ -115,7 +100,6 @@ func (t *Tokenizer) Tokenize(text string, addSpecial, parseSpecial bool) ([]int3
 		return tokens, nil
 	}
 
-	// https://github.com/ollama/ollama/blob/v0.20.5/runner/llamarunner/runner.go#L211
 	tokens, err := t.llama.Tokenize(text, addSpecial, parseSpecial)
 	if err != nil {
 		return nil, fmt.Errorf(errPfx+"tokenize: %w", err)
@@ -127,16 +111,12 @@ func (t *Tokenizer) Tokenize(text string, addSpecial, parseSpecial bool) ([]int3
 	return result, nil
 }
 
-// resolveThink resolves the think parameter, applying auto-detection for thinking models.
-// Returns the resolved *api.ThinkValue (may be nil if thinking is not active).
-//
-// Mirrors the server's thinking auto-detection:
+// resolveThink resolves the think parameter, defaulting to true for thinking-capable models.
 // https://github.com/ollama/ollama/blob/v0.20.5/server/routes.go#L396-L406
 func (t *Tokenizer) resolveThink(think *api.ThinkValue) *api.ThinkValue {
 	if think != nil {
 		return think
 	}
-	// https://github.com/ollama/ollama/blob/v0.20.5/server/routes.go#L398-L399
 	if t.hasThinking() {
 		return &api.ThinkValue{Value: true}
 	}
@@ -144,11 +124,9 @@ func (t *Tokenizer) resolveThink(think *api.ThinkValue) *api.ThinkValue {
 }
 
 // renderPrompt renders the prompt via renderer or template.
-// Mirrors the server's renderPrompt exactly:
 // https://github.com/ollama/ollama/blob/v0.20.5/server/prompt.go#L116-L136
 func (t *Tokenizer) renderPrompt(msgs []api.Message, tools []api.Tool, think *api.ThinkValue) (string, error) {
 	if t.model.Config.Renderer != "" {
-		// https://github.com/ollama/ollama/blob/v0.20.5/server/prompt.go#L117-L122
 		rendered, err := renderers.RenderWithRenderer(t.model.Config.Renderer, msgs, tools, think)
 		if err != nil {
 			return "", fmt.Errorf(errPfx+"renderer %q: %w", t.model.Config.Renderer, err)
@@ -156,7 +134,6 @@ func (t *Tokenizer) renderPrompt(msgs []api.Message, tools []api.Tool, think *ap
 		return rendered, nil
 	}
 
-	// https://github.com/ollama/ollama/blob/v0.20.5/server/prompt.go#L125-L133
 	var b bytes.Buffer
 	thinkVal := false
 	thinkLevel := ""
@@ -176,27 +153,13 @@ func (t *Tokenizer) renderPrompt(msgs []api.Message, tools []api.Tool, think *ap
 	return b.String(), nil
 }
 
-// TokenizeGenerate tokenizes text matching /api/generate.
-// Uses Prompt, System, and Think from api.GenerateRequest.
+// TokenizeGenerate tokenizes a prompt matching /api/generate.
+// Note: the server's chatPrompt performs context-length truncation that we do not replicate;
+// for prompts within the context window, the rendered output is identical.
 //
-// Message assembly mirrors the generate handler:
-// https://github.com/ollama/ollama/blob/v0.20.5/server/routes.go#L456-L471
+// Unsupported options (return ErrNotImplemented): Suffix, Template, Raw, Context, Images.
 //
-// The server then calls chatPrompt which calls renderPrompt:
-// https://github.com/ollama/ollama/blob/v0.20.5/server/routes.go#L497-L503
-// https://github.com/ollama/ollama/blob/v0.20.5/server/prompt.go#L23-L113
-//
-// Note: the server's chatPrompt performs context-length truncation that we do not replicate.
-// For prompts within the context window, the rendered output is identical.
-// The server also only includes m.Messages when req.Context == nil (deprecated field):
-// https://github.com/ollama/ollama/blob/v0.20.5/server/routes.go#L463-L465
-//
-// Unsupported options that trigger ErrNotImplemented:
-//   - Suffix: insert/fill-in-the-middle mode
-//   - Template: custom template override
-//   - Raw: raw mode (bypasses template rendering)
-//   - Context: deprecated conversation context field
-//   - Images: multimodal image attachments
+// https://github.com/ollama/ollama/blob/v0.20.5/server/routes.go#L456-L503
 func (t *Tokenizer) TokenizeGenerate(req api.GenerateRequest) ([]int32, error) {
 	if req.Suffix != "" {
 		return nil, fmt.Errorf(errPfx+"suffix (insert mode) is not implemented: %w", ErrNotImplemented)
@@ -233,12 +196,10 @@ func (t *Tokenizer) TokenizeGenerate(req api.GenerateRequest) ([]int32, error) {
 	return t.Tokenize(rendered, true, true)
 }
 
-// shouldUseHarmony mirrors the server's harmony detection heuristic exactly:
+// shouldUseHarmony detects harmony-based models.
 // https://github.com/ollama/ollama/blob/v0.20.5/server/routes.go#L80-L90
 func shouldUseHarmony(m *server.Model) bool {
 	if slices.Contains([]string{"gptoss", "gpt-oss"}, m.Config.ModelFamily) {
-		// heuristic to check whether the template expects to be parsed via harmony:
-		// search for harmony tags that are nearly always used
 		if m.Template.Contains("<|start|>") && m.Template.Contains("<|end|>") {
 			return true
 		}
@@ -247,7 +208,7 @@ func shouldUseHarmony(m *server.Model) bool {
 	return false
 }
 
-// processTools mirrors the server's tool processing logic exactly:
+// processTools initializes the built-in parser and returns processed tools.
 // https://github.com/ollama/ollama/blob/v0.20.5/server/routes.go#L2323-L2341
 func (t *Tokenizer) processTools(tools []api.Tool, msgs []api.Message, think *api.ThinkValue) []api.Tool {
 	// https://github.com/ollama/ollama/blob/v0.20.5/server/routes.go#L2323-L2325
@@ -255,19 +216,16 @@ func (t *Tokenizer) processTools(tools []api.Tool, msgs []api.Message, think *ap
 		t.model.Config.Parser = "harmony"
 	}
 
-	// https://github.com/ollama/ollama/blob/v0.20.5/server/routes.go#L2327-L2341
 	var builtinParser parsers.Parser
 	processedTools := tools
 
 	if t.model.Config.Parser != "" {
 		builtinParser = parsers.ParserForName(t.model.Config.Parser)
 		if builtinParser != nil {
-			// Determine last message for chat prefill
 			var lastMessage *api.Message
 			if len(msgs) > 0 {
 				lastMessage = &msgs[len(msgs)-1]
 			}
-			// Initialize parser and get processed tools
 			processedTools = builtinParser.Init(tools, lastMessage, think)
 		}
 	}
@@ -276,10 +234,7 @@ func (t *Tokenizer) processTools(tools []api.Tool, msgs []api.Message, think *ap
 }
 
 // filterThinkTags strips thinking content from assistant messages for qwen3 and deepseek-r1 models.
-// Mirrors the server's filterThinkTags exactly:
 // https://github.com/ollama/ollama/blob/v0.20.5/server/routes.go#L2642-L2668
-//
-// Uses the thinking.Parser directly from Ollama to strip <think>...</think> content.
 func filterThinkTags(msgs []api.Message, m *server.Model) []api.Message {
 	if m.Config.ModelFamily == "qwen3" || modelname.ParseName(m.Name).Model == "deepseek-r1" {
 		finalUserIndex := -1
@@ -304,24 +259,15 @@ func filterThinkTags(msgs []api.Message, m *server.Model) []api.Message {
 }
 
 // TokenizeChat tokenizes messages matching /api/chat.
-// Uses Messages, Tools, and Think from api.ChatRequest.
+// Note: the server's chatPrompt performs context-length truncation that we do not replicate;
+// for prompts within the context window, the rendered output is identical.
 //
-// Message assembly mirrors the chat handler:
-// https://github.com/ollama/ollama/blob/v0.20.5/server/routes.go#L2317-L2321
-//
-// Tool processing mirrors the chat handler:
-// https://github.com/ollama/ollama/blob/v0.20.5/server/routes.go#L2323-L2341
-//
-// The server then calls chatPrompt which calls renderPrompt:
-// https://github.com/ollama/ollama/blob/v0.20.5/server/routes.go#L2347
-// https://github.com/ollama/ollama/blob/v0.20.5/server/prompt.go#L23-L113
+// https://github.com/ollama/ollama/blob/v0.20.5/server/routes.go#L2317-L2347
 func (t *Tokenizer) TokenizeChat(req api.ChatRequest) ([]int32, error) {
 	msgs := append(t.model.Messages, req.Messages...)
 	if len(req.Messages) > 0 && req.Messages[0].Role != "system" && t.model.System != "" {
 		msgs = append([]api.Message{{Role: "system", Content: t.model.System}}, msgs...)
 	}
-
-	// https://github.com/ollama/ollama/blob/v0.20.5/server/routes.go#L2321
 	msgs = filterThinkTags(msgs, t.model)
 
 	processedTools := t.processTools(req.Tools, msgs, req.Think)

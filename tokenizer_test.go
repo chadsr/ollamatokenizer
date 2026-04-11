@@ -61,8 +61,7 @@ var thinkModes = []struct {
 	{"think_false", &api.ThinkValue{Value: false}},
 }
 
-// testMessages is a single set of chat messages used by both generate and chat
-// tests. It exercises tokenization edge cases across all message roles
+// testMessages exercises tokenization edge cases (unicode, special chars, thinking tags, all roles).
 var testMessages = []api.Message{
 	{Role: "system", Content: "You are a helpful assistant. Respond concisely. Use 中文 when asked."},
 	{Role: "user", Content: "Hello, 世界! What is 2+2?"},
@@ -78,8 +77,7 @@ var testMessages = []api.Message{
 	{Role: "user", Content: "And what about 德国?"},
 }
 
-// testPrompt returns the last user message content from testMessages,
-// for use with the /api/generate endpoint.
+// testPrompt returns the last user message from testMessages.
 func testPrompt() string {
 	for i := len(testMessages) - 1; i >= 0; i-- {
 		if testMessages[i].Role == "user" {
@@ -89,17 +87,9 @@ func testPrompt() string {
 	return ""
 }
 
-// TestTokenizeGenerateMatchesAPI verifies TokenizeGenerate produces the same
-// tokens that the Ollama runner feeds into the LLM (including BOS when required).
-//
-// Two comparisons are made:
-//
-//  1. Exact count match against prompt_eval_count (the runner's token count).
-//     Our library now uses addSpecial=true, matching the runner exactly.
-//
-//  2. Token-by-token against the context array. The context field is produced
-//     by the server's r.Tokenize() which uses addSpecial=false (no BOS), so we
-//     compare our tokens[1:] (skipping BOS) against the context prefix.
+// TestTokenizeGenerateMatchesAPI compares our tokens against the live /api/generate endpoint.
+// 1. Count match against prompt_eval_count (runner uses addSpecial=true, same as us).
+// 2. Token-by-token against context array (server uses addSpecial=false, so we skip our BOS prefix).
 func TestTokenizeGenerateMatchesAPI(t *testing.T) {
 	ensureModelsDir(t)
 	apiURL := ollamaURL(t)
@@ -134,19 +124,13 @@ func TestTokenizeGenerateMatchesAPI(t *testing.T) {
 					t.Fatalf("API /generate: %v", err)
 				}
 
-				// Exact count match against prompt_eval_count.
 				if len(ourTokens) != promptEvalCount {
 					t.Errorf("token count mismatch: ours=%d API prompt_eval_count=%d",
 						len(ourTokens), promptEvalCount)
 				}
 
-				// Token-by-token comparison against the context array.
-				// The context field uses addSpecial=false (no BOS), so our tokens
-				// may have a BOS prefix that context doesn't. Skip it if present.
 				ourPromptTokens := ourTokens
 				if len(ourTokens) > 0 && len(apiTokens) > 0 && ourTokens[0] != int32(apiTokens[0]) {
-					// Our first token (BOS) doesn't match context's first token —
-					// compare from our second token onward.
 					ourPromptTokens = ourTokens[1:]
 				}
 
@@ -171,8 +155,7 @@ func TestTokenizeGenerateMatchesAPI(t *testing.T) {
 	}
 }
 
-// TestTokenizeChatMatchesAPI verifies TokenizeChat produces the same token
-// count as the Ollama /api/chat endpoint.
+// TestTokenizeChatMatchesAPI compares our token count against the live /api/chat endpoint.
 func TestTokenizeChatMatchesAPI(t *testing.T) {
 	ensureModelsDir(t)
 	apiURL := ollamaURL(t)
@@ -207,8 +190,6 @@ func TestTokenizeChatMatchesAPI(t *testing.T) {
 					t.Fatalf("API /api/chat: %v", err)
 				}
 
-				// Exact count match against prompt_eval_count.
-				// Both the runner and our library use addSpecial=true.
 				if len(ourTokens) != apiCount {
 					t.Errorf("token count mismatch: ours=%d API=%d",
 						len(ourTokens), apiCount)
