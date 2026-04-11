@@ -3,172 +3,66 @@
 [![CI](https://github.com/chadsr/ollamatokenizer/actions/workflows/ci.yml/badge.svg)](https://github.com/chadsr/ollamatokenizer/actions/workflows/ci.yml)
 [![Dependabot Updates](https://github.com/chadsr/ollamatokenizer/actions/workflows/dependabot/dependabot-updates/badge.svg)](https://github.com/chadsr/ollamatokenizer/actions/workflows/dependabot/dependabot-updates)
 
-A simple HTTP server that exposes endpoints for Ollama's built-in tokenization.
+HTTP server exposing Ollama's internal tokenization as API endpoints.
 
-## Build
-
-Build the binary:
+## Build & Run
 
 ```shell
 make build
-```
-
-## Running
-
-```shell
 OLLAMA_MODELS=/var/lib/ollama ollamatokenizer serve
 ```
 
-## Docker
+Options: `-p`, `--port` (default: 11435)
 
-Build and run the container:
+### Docker
 
 ```shell
 docker build -t ollamatokenizer .
 docker run -p 11435:11435 -v /var/lib/ollama:/ollama-models:ro ollamatokenizer
 ```
 
-The `OLLAMA_MODELS` environment variable defaults to `/ollama-models` inside
-the container. Mount your host Ollama model directory at that path.
-
-The server listens on port **11435** by default.
-
-Options:
-
-- `-p`, `--port` -- port to listen on (default: 11435)
-
-## HTTP Endpoints
+## Endpoints
 
 ### GET /health
 
-Health check.
-
-Response:
-
-```json
-{
-  "status": "ok"
-}
-```
+Returns `{"status": "ok"}`.
 
 ### POST /tokenize
 
-Tokenize raw text into token IDs. No chat template or system prompt is
-applied — the text is encoded directly using the model's vocabulary.
-This is useful when you need the raw token count for a piece of text
-without any prompt formatting.
-
-Request body:
+Raw tokenization — no chat template or system prompt.
 
 ```json
-{
-  "model": "llama3.2:3b",
-  "text": "Why is the sky blue?"
-}
-```
-
-| Field   | Type   | Required | Description                        |
-|---------|--------|----------|------------------------------------|
-| `model` | string | yes      | Ollama model name (must be pulled) |
-| `text`  | string | yes      | The text to tokenize               |
-
-Response:
-
-```json
-{
-  "tokens": [1, 2998, 338, 278, 6507, 18561, 29973],
-  "count": 7
-}
+{"model": "llama3.2:3b", "text": "Why is the sky blue?"}
 ```
 
 ### POST /tokenize/generate
 
-Tokenize a prompt using the same tokenization as Ollama's `/api/generate`
-endpoint. Applies the model's chat template, system prompt, and thinking
-settings.
-
-Request body:
+Mirrors `/api/generate`. Applies chat template, system prompt, thinking.
 
 ```json
-{
-  "model": "llama3.2:3b",
-  "prompt": "Why is the sky blue?",
-  "system": "You are a helpful assistant.",
-  "think": true
-}
-```
-
-| Field     | Type    | Required | Description                                              |
-|-----------|---------|----------|----------------------------------------------------------|
-| `model`   | string  | yes      | Ollama model name (must be pulled)                       |
-| `prompt`  | string  | yes      | The user prompt to tokenize                              |
-| `system`  | string  | no       | System prompt (overrides the model's default)            |
-| `think`   | boolean | no       | Enable thinking/reasoning (auto-detected for thinking models) |
-
-Response:
-
-```json
-{
-  "tokens": [1, 2998, 338, 278, 6507, 18561, 29973],
-  "count": 7
-}
+{"model": "llama3.2:3b", "prompt": "Why is the sky blue?", "system": "You are a helpful assistant.", "think": true}
 ```
 
 ### POST /tokenize/chat
 
-Tokenize a chat conversation using the same tokenization as Ollama's
-`/api/chat` endpoint. Applies the model's chat template, tools, and thinking
-settings.
-
-Request body:
+Mirrors `/api/chat`. Applies chat template, tools, thinking.
 
 ```json
-{
-  "model": "llama3.2:3b",
-  "messages": [
-    {"role": "system", "content": "You are a helpful assistant."},
-    {"role": "user", "content": "Why is the sky blue?"}
-  ],
-  "tools": [],
-  "think": true
-}
+{"model": "llama3.2:3b", "messages": [{"role": "user", "content": "Why is the sky blue?"}], "tools": [], "think": true}
 ```
 
-| Field      | Type    | Required | Description                                               |
-|------------|---------|----------|-----------------------------------------------------------|
-| `model`    | string  | yes      | Ollama model name (must be pulled)                        |
-| `messages` | array   | yes      | List of chat messages with `role` and `content` fields    |
-| `tools`    | array   | no       | Tool definitions to include in the prompt                 |
-| `think`    | boolean | no       | Enable thinking/reasoning (auto-detected for thinking models) |
-
-Each message object:
-
-| Field      | Type   | Description                        |
-|------------|--------|------------------------------------|
-| `role`     | string | One of: `system`, `user`, `assistant` |
-| `content`  | string | The message text                   |
-
-Response:
+## Responses
 
 ```json
-{
-  "tokens": [1, 2998, 338, 278, 6507, 18561, 29973],
-  "count": 7
-}
+{"tokens": [1, 2998, 338, 278, 6507, 18561, 29973], "count": 7}
 ```
-
-### Error Responses
-
-All endpoints return errors in the following format:
 
 ```json
-{
-  "error": "description of the error"
-}
+{"error": "description"}
 ```
 
-| HTTP status | Cause                          |
-|-------------|--------------------------------|
-| 400         | Missing or invalid request body|
-| 404         | Model not found                |
-| 500         | Internal tokenization error    |
+| Status | Cause                            |
+|--------|----------------------------------|
+| 400    | Missing or invalid request body, model not found |
+| 501    | Unsupported option (suffix, template override, raw mode, context, images) |
+| 500    | Tokenization error               |
