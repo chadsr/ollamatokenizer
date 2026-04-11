@@ -76,7 +76,7 @@ func handleTokenizeGenerate(c *gin.Context) {
 
 	tok, err := getTokenizer(req.Model)
 	if err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 
@@ -101,7 +101,7 @@ func handleTokenizeChat(c *gin.Context) {
 
 	tok, err := getTokenizer(req.Model)
 	if err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 
@@ -121,7 +121,7 @@ func handleTokenize(c *gin.Context) {
 
 	tok, err := getTokenizer(req.Model)
 	if err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 
