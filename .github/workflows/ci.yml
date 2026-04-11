@@ -45,6 +45,7 @@ jobs:
     needs: lint
     env:
       CGO_ENABLED: "1"
+      OLLAMA_MODELS: "~/.ollama"
     steps:
       - uses: actions/checkout@v6
 
