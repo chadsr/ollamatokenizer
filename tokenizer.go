@@ -4,6 +4,7 @@ package ollamatokenizer
 import (
 	"bytes"
 	"fmt"
+	"log/slog"
 	"os"
 	"slices"
 
@@ -58,25 +59,27 @@ func New(name string) (*Tokenizer, error) {
 		return nil, fmt.Errorf(errPfx+"decode GGUF metadata: %w", err)
 	}
 
-	// https://github.com/ollama/ollama/blob/v0.20.5/llm/server.go#L148
+	// https://github.com/ollama/ollama/blob/v0.20.5/llm/server.go#L148-L164
+	var engine tokenizer.Tokenizer
 	if envconfig.NewEngine() || ggmlFile.KV().OllamaEngineRequired() {
-		// https://github.com/ollama/ollama/blob/v0.20.5/llm/server.go#L150
-		tp, err := model.NewTextProcessor(m.ModelPath)
-		if err != nil {
-			// https://github.com/ollama/ollama/blob/v0.20.5/llm/server.go#L154-L158
-			goto llamaFallback
+		tp, tpErr := model.NewTextProcessor(m.ModelPath)
+		if tpErr != nil {
+			// https://github.com/ollama/ollama/blob/v0.20.5/llm/server.go#L155-L157
+			slog.Debug("model not yet supported by Ollama engine, switching to compatibility mode", "model", m.ModelPath, "error", tpErr)
+		} else {
+			engine = tp
 		}
-		t.engine = tp
-		return t, nil
 	}
-
-llamaFallback:
-	// https://github.com/ollama/ollama/blob/v0.20.5/llm/server.go#L160
-	llamaModel, err := llama.LoadModelFromFile(m.ModelPath, llama.ModelParams{VocabOnly: true})
-	if err != nil {
-		return nil, fmt.Errorf(errPfx+"llama.cpp tokenizer for %q: %w", name, err)
+	if engine == nil {
+		// https://github.com/ollama/ollama/blob/v0.20.5/llm/server.go#L160
+		llamaModel, err := llama.LoadModelFromFile(m.ModelPath, llama.ModelParams{VocabOnly: true})
+		if err != nil {
+			return nil, fmt.Errorf(errPfx+"llama.cpp tokenizer for %q: %w", name, err)
+		}
+		t.llama = llamaModel
+	} else {
+		t.engine = engine
 	}
-	t.llama = llamaModel
 	return t, nil
 }
 
@@ -262,7 +265,7 @@ func filterThinkTags(msgs []api.Message, m *server.Model) []api.Message {
 // Note: the server's chatPrompt performs context-length truncation that we do not replicate;
 // for prompts within the context window, the rendered output is identical.
 //
-// https://github.com/ollama/ollama/blob/v0.20.5/server/routes.go#L2317-L2347
+// https://github.com/ollama/ollama/blob/v0.20.5/server/routes.go#L2276-L2347
 func (t *Tokenizer) TokenizeChat(req api.ChatRequest) ([]int32, error) {
 	msgs := append(t.model.Messages, req.Messages...)
 	if len(req.Messages) > 0 && req.Messages[0].Role != "system" && t.model.System != "" {
@@ -270,9 +273,11 @@ func (t *Tokenizer) TokenizeChat(req api.ChatRequest) ([]int32, error) {
 	}
 	msgs = filterThinkTags(msgs, t.model)
 
-	processedTools := t.processTools(req.Tools, msgs, req.Think)
-
+	// https://github.com/ollama/ollama/blob/v0.20.5/server/routes.go#L2277-L2281
 	think := t.resolveThink(req.Think)
+
+	processedTools := t.processTools(req.Tools, msgs, think)
+
 	rendered, err := t.renderPrompt(msgs, processedTools, think)
 	if err != nil {
 		return nil, err
