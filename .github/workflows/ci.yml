@@ -30,6 +30,11 @@ jobs:
             go.sum
             Makefile
 
+      - uses: actions/cache@v5
+        with:
+          path: include
+          key: headers-${{ hashFiles('go.mod') }}
+
       - name: Download C++ headers
         run: make update-headers
 
@@ -43,12 +48,53 @@ jobs:
 
         uses: reviewdog/action-hadolint@v1.50.5
 
+  build:
+    needs: lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: "go.mod"
+          cache-dependency-path: |
+            go.sum
+            Makefile
+
+      - uses: actions/cache@v5
+        with:
+          path: include
+          key: headers-${{ hashFiles('go.mod') }}
+
+      - name: Download C++ headers
+        run: make update-headers
+
+      - name: Build
+        run: make build
+
+  docker-build:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Build Docker image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          push: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
   test:
+    needs: build
     strategy:
       matrix:
         os: [ubuntu-latest]
     runs-on: ${{ matrix.os }}
-    needs: lint
     env:
       OLLAMA_MODELS: "/home/runner/.ollama"
     steps:
@@ -60,6 +106,11 @@ jobs:
           cache-dependency-path: |
             go.sum
             Makefile
+
+      - uses: actions/cache@v5
+        with:
+          path: include
+          key: headers-${{ hashFiles('go.mod') }}
 
       - uses: actions/cache@v5
         with:
