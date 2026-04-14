@@ -1,6 +1,7 @@
 # ollamatokenizer
 
 [![CI](https://github.com/chadsr/ollamatokenizer/actions/workflows/ci.yml/badge.svg)](https://github.com/chadsr/ollamatokenizer/actions/workflows/ci.yml)
+[![Release](https://github.com/chadsr/ollamatokenizer/actions/workflows/release.yml/badge.svg)](https://github.com/chadsr/ollamatokenizer/actions/workflows/release.yml)
 [![Dependabot Updates](https://github.com/chadsr/ollamatokenizer/actions/workflows/dependabot/dependabot-updates/badge.svg)](https://github.com/chadsr/ollamatokenizer/actions/workflows/dependabot/dependabot-updates)
 
 HTTP server exposing Ollama's internal tokenization as API endpoints.
