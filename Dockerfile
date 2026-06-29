@@ -1,6 +1,6 @@
 FROM golang:1.26-alpine AS builder
 
-RUN apk add --no-cache build-base curl
+RUN apk add --no-cache build-base
 
 WORKDIR /src
 
@@ -8,7 +8,7 @@ COPY go.mod go.sum ./
 RUN go mod download
 
 COPY . .
-RUN make build BUILD_DIR=/out
+RUN CGO_ENABLED=1 go build -o /out/ollamatokenizer ./cmd/ollamatokenizer
 
 FROM alpine:3.24
 
@@ -26,6 +26,5 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
 COPY --from=builder /out/ollamatokenizer /usr/local/bin/ollamatokenizer
 
 USER ollamatokenizer
-
 ENTRYPOINT ["ollamatokenizer"]
 CMD ["serve"]

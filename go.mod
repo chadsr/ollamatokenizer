@@ -1,10 +1,10 @@
 module github.com/chadsr/ollamatokenizer
 
-go 1.25.0
+go 1.26.0
 
 require (
 	github.com/gin-gonic/gin v1.12.0
-	github.com/ollama/ollama v0.20.7
+	github.com/ollama/ollama v0.30.11
 	github.com/spf13/cobra v1.10.2
 )
 
@@ -20,7 +20,7 @@ require (
 	github.com/chewxy/math32 v1.11.0 // indirect
 	github.com/cloudwego/base64x v0.1.6 // indirect
 	github.com/d4l3k/go-bfloat16 v0.0.0-20211005043715-690c3bdd05f1 // indirect
-	github.com/dlclark/regexp2 v1.11.4 // indirect
+	github.com/dlclark/regexp2 v1.11.5 // indirect
 	github.com/emirpasic/gods/v2 v2.0.0-alpha // indirect
 	github.com/gabriel-vasile/mimetype v1.4.12 // indirect
 	github.com/gin-contrib/cors v1.7.2 // indirect
