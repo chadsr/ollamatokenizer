@@ -11,8 +11,7 @@ permissions:
   contents: read
 
 env:
-  CGO_ENABLED: "1"
-  CGO_CPPFLAGS: "-I${{ github.workspace }}/include"
+  CGO_ENABLED: '1'
 
 jobs:
   lint:
@@ -25,18 +24,19 @@ jobs:
 
       - uses: actions/setup-go@v6
         with:
-          go-version-file: "go.mod"
+          go-version-file: 'go.mod'
           cache-dependency-path: |
             go.sum
             Makefile
 
-      - uses: actions/cache@v6
+      - name: Cache llama.cpp headers
+        uses: actions/cache@v6
         with:
-          path: include
-          key: headers-${{ hashFiles('go.mod') }}
+          path: llama-cpp
+          key: llama-cpp-${{ hashFiles('go.mod') }}
 
-      - name: Download C++ headers
-        run: make update-headers
+      - name: Fetch llama.cpp headers
+        run: make fetch-headers
 
       - name: check that 'go mod tidy' is clean
         run: go mod tidy --diff || (echo "Please run 'go mod tidy'." && exit 1)
@@ -44,8 +44,8 @@ jobs:
       - uses: golangci/golangci-lint-action@v9
         with:
           only-new-issues: true
-      - name: Run hadolint with reviewdog
 
+      - name: Run hadolint with reviewdog
         uses: reviewdog/action-hadolint@v1.51.0
 
   build:
@@ -56,27 +56,41 @@ jobs:
 
       - uses: actions/setup-go@v6
         with:
-          go-version-file: "go.mod"
+          go-version-file: 'go.mod'
           cache-dependency-path: |
             go.sum
             Makefile
 
-      - uses: actions/cache@v6
+      - name: Cache llama.cpp deps
+        uses: actions/cache@v6
         with:
-          path: include
-          key: headers-${{ hashFiles('go.mod') }}
+          path: llama-cpp
+          key: llama-cpp-${{ hashFiles('go.mod') }}
 
-      - name: Download C++ headers
-        run: make update-headers
+      # The runner has no ollama install, so source libllama.so from the ollama
+      # image pinned to go.mod (tag has no leading "v").
+      - name: Derive ollama image tag from go.mod
+        id: ver
+        run: echo "tag=$(awk '/github\.com\/ollama\/ollama/ {print $2}' go.mod | sed 's/^v//')" >> "$GITHUB_OUTPUT"
+
+      - name: Extract pinned ollama libs
+        run: |
+          id=$(docker create ollama/ollama:${{ steps.ver.outputs.tag }})
+          docker cp "$id":/usr/lib/ollama ./ollama-libs
+          docker rm "$id" >/dev/null
 
       - name: Build
-        run: make build
+        run: make build OLLAMA_LIB_DIR=./ollama-libs
 
   docker-build:
     needs: build
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+
+      - name: Derive ollama image tag from go.mod
+        id: ver
+        run: echo "ver=$(awk '/github\.com\/ollama\/ollama/ {print $2}' go.mod)" >> "$GITHUB_OUTPUT"
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
@@ -85,32 +99,41 @@ jobs:
         uses: docker/build-push-action@v7
         with:
           context: .
+          build-args: OLLAMA_VERSION=${{ steps.ver.outputs.ver }}
           push: false
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
   test:
     needs: build
-    strategy:
-      matrix:
-        os: [ubuntu-latest]
-    runs-on: ${{ matrix.os }}
+    runs-on: ubuntu-latest
     env:
-      OLLAMA_MODELS: "/home/runner/.ollama"
+      OLLAMA_MODELS: '/home/runner/.ollama'
     steps:
       - uses: actions/checkout@v7
 
       - uses: actions/setup-go@v6
         with:
-          go-version-file: "go.mod"
+          go-version-file: 'go.mod'
           cache-dependency-path: |
             go.sum
             Makefile
 
-      - uses: actions/cache@v6
+      - name: Cache llama.cpp deps
+        uses: actions/cache@v6
         with:
-          path: include
-          key: headers-${{ hashFiles('go.mod') }}
+          path: llama-cpp
+          key: llama-cpp-${{ hashFiles('go.mod') }}
+
+      - name: Derive ollama image tag from go.mod
+        id: ver
+        run: echo "tag=$(awk '/github\.com\/ollama\/ollama/ {print $2}' go.mod | sed 's/^v//')" >> "$GITHUB_OUTPUT"
+
+      - name: Extract pinned ollama libs
+        run: |
+          id=$(docker create ollama/ollama:${{ steps.ver.outputs.tag }})
+          docker cp "$id":/usr/lib/ollama ./ollama-libs
+          docker rm "$id" >/dev/null
 
       - uses: actions/cache@v6
         with:
@@ -123,8 +146,7 @@ jobs:
       - name: Pull tinyllama
         run: ollama pull tinyllama:1.1b
 
-      - name: Download C++ headers
-        run: make update-headers
-
+      # The test binary loads libllama at runtime from the default /usr/lib/ollama;
+      # point it at the pinned libs we extracted so our tokenizer .so matches go.mod.
       - name: go test
-        run: go test -v
+        run: LD_LIBRARY_PATH="$PWD/ollama-libs" make build OLLAMA_LIB_DIR=./ollama-libs && LD_LIBRARY_PATH="$PWD/ollama-libs" OLLAMATOKENIZER_TEST_MODELS=tinyllama:1.1b go test -v

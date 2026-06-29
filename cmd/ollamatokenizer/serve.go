@@ -20,9 +20,7 @@ type tokenResponse struct {
 	Count  int     `json:"count"`
 }
 
-// tokenizers caches a Tokenizer per model. Each entry holds only the model's
-// vocabulary in memory (no weights, no subprocess), so caching is cheap and
-// unbounded.
+// tokenizers caches a Tokenizer per model (vocab only — cheap, unbounded).
 var tokenizers = struct {
 	sync.RWMutex
 	m map[string]*ollamatokenizer.Tokenizer
@@ -139,18 +137,17 @@ func handleHealth(c *gin.Context) {
 var serveCmd = &cobra.Command{
 	Use:   "serve",
 	Short: "Start the tokenization HTTP server",
-	Long: `Start an HTTP server exposing tokenization endpoints that produce
-tokens identical to a running Ollama instance.
+	Long: `Start an HTTP tokenization server producing tokens identical to a running Ollama instance.
 
 Set OLLAMA_MODELS to your ollama model directory (e.g. /var/lib/ollama).
 
 Endpoints:
-  GET  /health               - health check
-  POST /tokenize             - tokenize raw text (no template)
-  POST /tokenize/generate    - tokenize a prompt (mirrors /api/generate)
-  POST /tokenize/chat        - tokenize messages (mirrors /api/chat)
+  GET  /health            - health check
+  POST /tokenize          - tokenize raw text (no template)
+  POST /tokenize/generate - tokenize a prompt (mirrors /api/generate)
+  POST /tokenize/chat     - tokenize messages (mirrors /api/chat)
 
-Both tokenization endpoints return: {"tokens": [...], "count": N}`,
+Returns: {"tokens": [...], "count": N}`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		port, _ := cmd.Flags().GetInt("port")
 

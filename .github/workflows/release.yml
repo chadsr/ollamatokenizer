@@ -11,6 +11,9 @@ jobs:
         steps:
             - name: Checkout
               uses: actions/checkout@v7
+            - name: Derive ollama version from go.mod
+              id: ver
+              run: echo "ollama=$(awk '/github\.com\/ollama\/ollama/ {print $2}' go.mod)" >> "$GITHUB_OUTPUT"
             - name: Docker Meta-Data
               id: meta
               uses: docker/metadata-action@v6
@@ -38,6 +41,7 @@ jobs:
               uses: docker/build-push-action@v7
               with:
                   push: true
+                  build-args: OLLAMA_VERSION=${{ steps.ver.outputs.ollama }}
                   cache-from: type=gha
                   cache-to: type=gha,mode=max
                   platforms: linux/amd64, linux/arm64
