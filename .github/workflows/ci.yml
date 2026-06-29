@@ -30,7 +30,7 @@ jobs:
             go.sum
             Makefile
 
-      - uses: actions/cache@v5
+      - uses: actions/cache@v6
         with:
           path: include
           key: headers-${{ hashFiles('go.mod') }}
@@ -61,7 +61,7 @@ jobs:
             go.sum
             Makefile
 
-      - uses: actions/cache@v5
+      - uses: actions/cache@v6
         with:
           path: include
           key: headers-${{ hashFiles('go.mod') }}
@@ -107,12 +107,12 @@ jobs:
             go.sum
             Makefile
 
-      - uses: actions/cache@v5
+      - uses: actions/cache@v6
         with:
           path: include
           key: headers-${{ hashFiles('go.mod') }}
 
-      - uses: actions/cache@v5
+      - uses: actions/cache@v6
         with:
           path: ${{ env.OLLAMA_MODELS }}
           key: ${{ runner.os }}-ollama
