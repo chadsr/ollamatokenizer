@@ -52,10 +52,6 @@ func (t *Tokenizer) Close() {
 	}
 }
 
-// IsNativeJinja reports whether ollama would render this model via llama-server's
-// Jinja engine (minja), which we approximate in-process — see renderNativeJinja.
-func (t *Tokenizer) IsNativeJinja() bool { return nativeJinja(t.model) }
-
 // Tokenize encodes raw text. addSpecial applies BOS/EOS per the vocab; parseSpecial
 // parses special-token strings (e.g. <|im_start|>) into their IDs.
 func (t *Tokenizer) Tokenize(text string, addSpecial, parseSpecial bool) ([]int32, error) {
@@ -158,7 +154,27 @@ func (t *Tokenizer) renderNativeJinja(msgs []api.Message) (string, error) {
 	if baked := bakedLiteralPrefix(tmpl); baked != "" {
 		rendered = baked + rendered
 	}
+	// Restore a {{ bos_token }} the builtin drops (deepseek-r1 etc.). Only when
+	// the tokenizer itself won't add BOS, else it would be double-counted.
+	if !t.tok.AddBOS() && templateEmitsBosToken(tmpl) {
+		rendered = t.tok.BOSPiece() + rendered
+	}
 	return rendered, nil
+}
+
+// templateEmitsBosToken reports whether {{ bos_token }} is emitted outside the
+// render loop (minja substitutes it; the builtin renderer drops it). The render
+// loop is the LAST {% for %}; some templates have an earlier extraction loop.
+func templateEmitsBosToken(tmpl string) bool {
+	i := strings.LastIndex(tmpl, "{% for")
+	if j := strings.LastIndex(tmpl, "{%- for"); j > i {
+		i = j
+	}
+	head := tmpl
+	if i >= 0 {
+		head = tmpl[:i]
+	}
+	return strings.Contains(head, "{{ bos_token }}") || strings.Contains(head, "{{bos_token}}")
 }
 
 // bakedLiteralPrefix returns literal text the template emits before {% for },

@@ -67,6 +67,15 @@ static int ot_llama_apply_chat_template(const char* tmpl,
 static int ot_llama_add_bos(const void* vocab) {
 	return (int) llama_vocab_get_add_bos((const struct llama_vocab*) vocab);
 }
+
+// bos_id / bos_piece: the vocab's BOS token, for restoring a {{ bos_token }}
+// the builtin renderer drops on native-Jinja templates.
+static int ot_llama_bos_id(const void* vocab) {
+	return (int) llama_vocab_bos((const struct llama_vocab*) vocab);
+}
+static int ot_llama_token_piece(const void* vocab, int token, char* buf, int n) {
+	return (int) llama_token_to_piece((const struct llama_vocab*) vocab, (llama_token) token, buf, (int32_t)n, 0, true);
+}
 */
 import "C"
 
@@ -207,6 +216,24 @@ func (c *cgoVocab) Encode(text string, addSpecial, parseSpecial bool) ([]int32, 
 
 // AddBOS reports whether llama.cpp prepends BOS at tokenize(add_special=true).
 func (c *cgoVocab) AddBOS() bool { return C.ot_llama_add_bos(c.vocab) != 0 }
+
+// BOSPiece returns the textual piece for the vocab's BOS token.
+func (c *cgoVocab) BOSPiece() string {
+	id := C.ot_llama_bos_id(c.vocab)
+	if id < 0 {
+		return ""
+	}
+	buf := make([]byte, 64)
+	n := int(C.ot_llama_token_piece(c.vocab, id, (*C.char)(unsafe.Pointer(&buf[0])), C.int(len(buf))))
+	if n <= 0 {
+		return ""
+	}
+	if n > len(buf) {
+		buf = make([]byte, n)
+		n = int(C.ot_llama_token_piece(c.vocab, id, (*C.char)(unsafe.Pointer(&buf[0])), C.int(len(buf))))
+	}
+	return string(buf[:n])
+}
 
 func cbool(b bool) C.int {
 	if b {

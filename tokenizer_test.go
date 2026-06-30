@@ -141,19 +141,6 @@ func TestTokenizeGenerateMatchesAPI(t *testing.T) {
 						t.Fatalf("API /generate: %v", err)
 					}
 
-					// Native-Jinja models use the builtin renderer; deepseek-r1 is
-					// off by its {{ bos_token }} (string not in the GGUF), so allow
-					// ±2 for that family — exact needs llama-server's minja.
-					native := tok.IsNativeJinja()
-					countDelta := len(ourTokens) - promptEvalCount
-					if native {
-						if abs(countDelta) > 2 {
-							t.Errorf("token count outside native-Jinja tolerance: ours=%d API=%d (delta=%d)",
-								len(ourTokens), promptEvalCount, countDelta)
-						}
-						return
-					}
-
 					if len(ourTokens) != promptEvalCount {
 						t.Errorf("token count mismatch: ours=%d API prompt_eval_count=%d",
 							len(ourTokens), promptEvalCount)
@@ -223,13 +210,7 @@ func TestTokenizeChatMatchesAPI(t *testing.T) {
 						t.Fatalf("API /api/chat: %v", err)
 					}
 
-					delta := len(ourTokens) - apiCount
-					if tok.IsNativeJinja() {
-						if abs(delta) > 2 {
-							t.Errorf("token count outside native-Jinja tolerance: ours=%d API=%d (delta=%d)",
-								len(ourTokens), apiCount, delta)
-						}
-					} else if len(ourTokens) != apiCount {
+					if len(ourTokens) != apiCount {
 						t.Errorf("token count mismatch: ours=%d API=%d",
 							len(ourTokens), apiCount)
 					}
@@ -342,11 +323,4 @@ func tokenSlicesEqual(a []int32, b []int) bool {
 		}
 	}
 	return true
-}
-
-func abs(n int) int {
-	if n < 0 {
-		return -n
-	}
-	return n
 }
