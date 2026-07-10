@@ -61,7 +61,7 @@ jobs:
         uses: actions/cache@v6
         with:
           path: llama-cpp
-          key: llama-cpp-${{ hashFiles('go.mod') }}
+          key: llama-cpp-${{ hashFiles('go.mod', 'jinja/wrapper.cpp') }}
 
       # The runner has no ollama install, so source libllama.so from the ollama
       # image pinned to go.mod (tag has no leading "v").
@@ -125,7 +125,7 @@ jobs:
         uses: actions/cache@v6
         with:
           path: llama-cpp
-          key: llama-cpp-${{ hashFiles('go.mod') }}
+          key: llama-cpp-${{ hashFiles('go.mod', 'jinja/wrapper.cpp') }}
 
       - name: Derive ollama image tag from go.mod
         id: ver

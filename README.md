@@ -34,7 +34,7 @@ Returns `{"status": "ok"}`.
 
 ### POST /tokenize
 
-Raw tokenization — no chat template or system prompt.
+Raw tokenization - no chat template or system prompt.
 
 ```json
 {"model": "llama3.2:3b", "text": "Why is the sky blue?"}

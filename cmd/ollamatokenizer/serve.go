@@ -20,7 +20,7 @@ type tokenResponse struct {
 	Count  int     `json:"count"`
 }
 
-// tokenizers caches a Tokenizer per model (vocab only — cheap, unbounded).
+// tokenizers caches a Tokenizer per model (vocab only).
 var tokenizers = struct {
 	sync.RWMutex
 	m map[string]*ollamatokenizer.Tokenizer
