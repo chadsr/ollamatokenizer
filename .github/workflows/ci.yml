@@ -25,9 +25,7 @@ jobs:
       - uses: actions/setup-go@v6
         with:
           go-version-file: 'go.mod'
-          cache-dependency-path: |
-            go.sum
-            Makefile
+          cache-dependency-path: go.sum
 
       - name: Cache llama.cpp headers
         uses: actions/cache@v6
@@ -57,9 +55,7 @@ jobs:
       - uses: actions/setup-go@v6
         with:
           go-version-file: 'go.mod'
-          cache-dependency-path: |
-            go.sum
-            Makefile
+          cache-dependency-path: go.sum
 
       - name: Cache llama.cpp deps
         uses: actions/cache@v6
@@ -73,7 +69,15 @@ jobs:
         id: ver
         run: echo "tag=$(awk '/github\.com\/ollama\/ollama/ {print $2}' go.mod | sed 's/^v//')" >> "$GITHUB_OUTPUT"
 
+      - name: Cache ollama libs
+        id: ollama-libs
+        uses: actions/cache@v6
+        with:
+          path: ollama-libs
+          key: ollama-libs-${{ steps.ver.outputs.tag }}
+
       - name: Extract pinned ollama libs
+        if: steps.ollama-libs.outputs.cache-hit != 'true'
         run: |
           id=$(docker create ollama/ollama:${{ steps.ver.outputs.tag }})
           docker cp "$id":/usr/lib/ollama ./ollama-libs
@@ -115,9 +119,7 @@ jobs:
       - uses: actions/setup-go@v6
         with:
           go-version-file: 'go.mod'
-          cache-dependency-path: |
-            go.sum
-            Makefile
+          cache-dependency-path: go.sum
 
       - name: Cache llama.cpp deps
         uses: actions/cache@v6
@@ -129,16 +131,27 @@ jobs:
         id: ver
         run: echo "tag=$(awk '/github\.com\/ollama\/ollama/ {print $2}' go.mod | sed 's/^v//')" >> "$GITHUB_OUTPUT"
 
+      - name: Cache ollama libs
+        id: ollama-libs
+        uses: actions/cache@v6
+        with:
+          path: ollama-libs
+          key: ollama-libs-${{ steps.ver.outputs.tag }}
+
       - name: Extract pinned ollama libs
+        if: steps.ollama-libs.outputs.cache-hit != 'true'
         run: |
           id=$(docker create ollama/ollama:${{ steps.ver.outputs.tag }})
           docker cp "$id":/usr/lib/ollama ./ollama-libs
           docker rm "$id" >/dev/null
 
-      - uses: actions/cache@v6
+      - name: Restore ollama models cache
+        uses: actions/cache/restore@v6
         with:
           path: ${{ env.OLLAMA_MODELS }}
           key: ${{ runner.os }}-ollama
+          restore-keys: |
+            ${{ runner.os }}-ollama-
 
       - name: Setup Ollama
         uses: ai-action/setup-ollama@v2
@@ -146,7 +159,17 @@ jobs:
       - name: Pull tinyllama
         run: ollama pull tinyllama:1.1b
 
+      - name: Compute model digest
+        id: digest
+        run: echo "hash=$(find "$OLLAMA_MODELS" -type f -exec sha256sum {} + | sort | sha256sum | cut -c1-16)" >> "$GITHUB_OUTPUT"
+
+      - name: Save ollama models cache
+        uses: actions/cache/save@v6
+        with:
+          path: ${{ env.OLLAMA_MODELS }}
+          key: ${{ runner.os }}-ollama-${{ steps.digest.outputs.hash }}
+
       # The test binary loads libllama at runtime from the default /usr/lib/ollama;
       # point it at the pinned libs we extracted so our tokenizer .so matches go.mod.
       - name: go test
-        run: LD_LIBRARY_PATH="$PWD/ollama-libs" make build OLLAMA_LIB_DIR=./ollama-libs && LD_LIBRARY_PATH="$PWD/ollama-libs" OLLAMATOKENIZER_TEST_MODELS=tinyllama:1.1b go test -v
+        run: LD_LIBRARY_PATH="$PWD/ollama-libs" make build OLLAMA_LIB_DIR=./ollama-libs && LD_LIBRARY_PATH="$PWD/ollama-libs" OLLAMATOKENIZER_TEST_MODELS=tinyllama:1.1b go test -v -timeout 20m
