@@ -98,11 +98,11 @@ func newCGOVocab(modelPath string) (*cgoVocab, error) {
 	cpath := C.CString(modelPath)
 	defer C.free(unsafe.Pointer(cpath))
 
-	m := unsafe.Pointer(C.ot_llama_load_vocab(cpath))
+	m := C.ot_llama_load_vocab(cpath)
 	if m == nil {
 		return nil, fmt.Errorf("llama_load_model_from_file(vocab_only) failed for %s", modelPath)
 	}
-	v := unsafe.Pointer(C.ot_llama_vocab(m))
+	v := C.ot_llama_vocab(m)
 	if v == nil {
 		C.ot_llama_free(m)
 		return nil, fmt.Errorf("model %s has no vocabulary", modelPath)
