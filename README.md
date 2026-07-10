@@ -22,7 +22,7 @@ Options: `-p`, `--port` (default: 11435)
 ### Docker
 
 ```shell
-docker build -t ollamatokenizer .
+make docker-build
 docker run -p 11435:11435 -v /var/lib/ollama:/ollama-models:ro ollamatokenizer
 ```
 

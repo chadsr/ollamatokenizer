@@ -1,14 +1,12 @@
 # syntax=docker/dockerfile:1
 #
 # glibc-based (Ubuntu): libllama.so from the ollama image won't load under musl.
-# Versions pin to go.mod via `make fetch-deps`; override OLLAMA_VERSION after a bump.
-
 # go.mod carries a leading "v"; the Docker Hub tag does not, so strip it.
-ARG OLLAMA_VERSION=v0.31.2
+ARG OLLAMA_VERSION
 FROM ollama/ollama:${OLLAMA_VERSION#v} AS ollama-libs
 
 FROM golang:1.26-bookworm AS builder
-ARG OLLAMA_VERSION=v0.31.2
+ARG OLLAMA_VERSION
 RUN apt-get update \
     && apt-get install -y --no-install-recommends gcc g++ make curl ca-certificates \
     && rm -rf /var/lib/apt/lists/*

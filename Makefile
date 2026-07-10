@@ -1,15 +1,17 @@
 # CGO build against ollama's bundled libllama.so. llama-cpp/ (headers + libs)
 # is gitignored; `make fetch-deps` populates it, pinned to go.mod's ollama version.
 #
-#   make fetch-deps   # fetch llama.cpp headers + copy ollama libs into llama-cpp/
-#   make build        # build the CLI (implies fetch-deps)
-#   make tidy         # go mod tidy
-#   make clean        # remove bin/
-#   make clean-deps   # also remove llama-cpp/
+#   make fetch-deps    # fetch llama.cpp headers + copy ollama libs into llama-cpp/
+#   make build         # build the CLI (implies fetch-deps)
+#   make docker-build  # build the Docker image (ollama version pinned via go.mod)
+#   make tidy          # go mod tidy
+#   make clean         # remove bin/
+#   make clean-deps    # also remove llama-cpp/
 
 GO ?= go
 GOFLAGS ?=
 BUILD_DIR := bin
+DOCKER_IMAGE ?= ollamatokenizer
 
 # ollama version from go.mod → llama.cpp version recorded at that tag.
 OLLAMA_VERSION := $(shell awk '/github\.com\/ollama\/ollama/ {print $$2}' go.mod)
@@ -41,7 +43,7 @@ LLAMA_HEADERS := \
 	$(LLAMA_GGML)/ggml-opt.h \
 	$(LLAMA_GGML)/gguf.h
 
-.PHONY: all build fetch-deps fetch-headers fetch-libs tidy clean clean-deps
+.PHONY: all build fetch-deps fetch-headers fetch-libs docker-build tidy clean clean-deps
 
 all: build
 
@@ -86,6 +88,12 @@ tidy:
 build: fetch-deps
 	@mkdir -p $(BUILD_DIR)
 	CGO_ENABLED=1 $(GO) build -trimpath $(GOFLAGS) -o $(BUILD_DIR)/ollamatokenizer ./cmd/ollamatokenizer
+
+# Single-sourced Docker build: OLLAMA_VERSION comes from go.mod and is passed as
+# a build-arg (the Dockerfile has no default — Docker can't read go.mod to resolve
+# the FROM tag at parse time). CI does the same derivation.
+docker-build:
+	docker build --build-arg OLLAMA_VERSION=$(OLLAMA_VERSION) -t $(DOCKER_IMAGE) .
 
 clean:
 	rm -rf $(BUILD_DIR)
