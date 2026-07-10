@@ -33,7 +33,6 @@ OLLAMA_LIB_DIR ?= /usr/lib/ollama
 LLAMA_SRC := https://raw.githubusercontent.com/ggml-org/llama.cpp/$(LLAMA_CPP_VERSION)
 
 JINJA_DIR := $(LLAMA_DIR)/jinja
-JINJA_OBJ := $(addprefix $(JINJA_DIR)/,string.o lexer.o value.o runtime.o parser.o caps.o unicode.o wrapper.o)
 
 LLAMA_HEADERS := \
 	$(LLAMA_INCLUDE)/llama.h \
@@ -90,11 +89,11 @@ $(JINJA_DIR):
 	@mkdir -p "$@"
 
 # -include cstring avoids the string.h / <string.h> filename collision.
-$(JINJA_DIR)/%.o: $(JINJA_DIR)/%.cpp
-	g++ -std=c++17 -O2 -c -include cstring -I$(LLAMA_DIR) "$<" -o "$@"
-
-build-jinja: $(JINJA_OBJ)
-	@ar rcs $(LLAMA_LIB)/libotjinja.a $(JINJA_OBJ)
+build-jinja: fetch-jinja
+	@for f in $(JINJA_DIR)/*.cpp; do \
+		g++ -std=c++17 -O2 -c -include cstring -I$(LLAMA_DIR) "$$f" -o "$${f%.cpp}.o"; \
+	done
+	@ar rcs $(LLAMA_LIB)/libotjinja.a $(JINJA_DIR)/*.o
 
 fetch-libs: | $(LLAMA_LIB)
 	@test -f $(OLLAMA_LIB_DIR)/libllama.so || { \
