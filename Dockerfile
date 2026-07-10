@@ -5,7 +5,7 @@
 ARG OLLAMA_VERSION
 FROM ollama/ollama:${OLLAMA_VERSION#v} AS ollama-libs
 
-FROM golang:1.26-bookworm AS builder
+FROM golang:1.26-trixie AS builder
 ARG OLLAMA_VERSION
 RUN apt-get update \
     && apt-get install -y --no-install-recommends gcc g++ make curl ca-certificates nlohmann-json3-dev \
