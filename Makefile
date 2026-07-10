@@ -33,13 +33,7 @@ OLLAMA_LIB_DIR ?= /usr/lib/ollama
 LLAMA_SRC := https://raw.githubusercontent.com/ggml-org/llama.cpp/$(LLAMA_CPP_VERSION)
 
 JINJA_DIR := $(LLAMA_DIR)/jinja
-JINJA_HEADERS := $(JINJA_DIR)/utils.h $(JINJA_DIR)/string.h $(JINJA_DIR)/lexer.h \
-	$(JINJA_DIR)/value.h $(JINJA_DIR)/runtime.h $(JINJA_DIR)/parser.h \
-	$(JINJA_DIR)/caps.h $(JINJA_DIR)/unicode.h
-JINJA_SOURCES := $(JINJA_DIR)/string.cpp $(JINJA_DIR)/lexer.cpp $(JINJA_DIR)/value.cpp \
-	$(JINJA_DIR)/runtime.cpp $(JINJA_DIR)/parser.cpp $(JINJA_DIR)/caps.cpp \
-	$(JINJA_DIR)/unicode.cpp $(JINJA_DIR)/wrapper.cpp
-JINJA_OBJECTS := $(JINJA_SOURCES:.cpp=.o)
+JINJA_OBJ := $(addprefix $(JINJA_DIR)/,string.o lexer.o value.o runtime.o parser.o caps.o unicode.o wrapper.o)
 
 LLAMA_HEADERS := \
 	$(LLAMA_INCLUDE)/llama.h \
@@ -80,35 +74,27 @@ fetch-headers: $(LLAMA_HEADERS)
 	@printf '%s' $(LLAMA_CPP_VERSION) > $(LLAMA_CPP_VERSION_FILE)
 	@echo "Headers: llama.cpp $(LLAMA_CPP_VERSION) (via ollama $(OLLAMA_VERSION))"
 
-# Jinja (minja) sources from llama.cpp's common/jinja/ - the same Jinja engine
+# Jinja (minja) sources from llama.cpp's common/jinja/ — the same Jinja engine
 # ollama's llama-server uses for chat template rendering.
-fetch-jinja: $(JINJA_HEADERS) $(JINJA_SOURCES)
+fetch-jinja: | $(JINJA_DIR)
+	@for f in utils.h string.h string.cpp lexer.h lexer.cpp value.h value.cpp \
+	          runtime.h runtime.cpp parser.h parser.cpp caps.h caps.cpp; do \
+		curl -fsSL "$(LLAMA_SRC)/common/jinja/$$f" -o "$(JINJA_DIR)/$$f" || exit 1; \
+	done
+	@curl -fsSL "$(LLAMA_SRC)/common/unicode.h" -o "$(JINJA_DIR)/unicode.h"
+	@curl -fsSL "$(LLAMA_SRC)/common/unicode.cpp" -o "$(JINJA_DIR)/unicode.cpp"
+	@cp jinja/wrapper.cpp $(JINJA_DIR)/
 	@echo "Jinja: fetched from llama.cpp $(LLAMA_CPP_VERSION)"
 
 $(JINJA_DIR):
 	@mkdir -p "$@"
 
-# Fetch jinja header/source files from llama.cpp.
-$(JINJA_DIR)/%.h $(JINJA_DIR)/%.cpp &: | $(JINJA_DIR)
-	@for f in utils.h string.h string.cpp lexer.h lexer.cpp value.h value.cpp \
-	          runtime.h runtime.cpp parser.h parser.cpp caps.h caps.cpp; do \
-		curl -fsSL "$(LLAMA_SRC)/common/jinja/$$f" -o "$(JINJA_DIR)/$$f" || exit 1; \
-	done
-	@curl -fsSL "$(LLAMA_SRC)/common/unicode.h" -o "$(JINJA_DIR)/unicode.h" || exit 1
-	@curl -fsSL "$(LLAMA_SRC)/common/unicode.cpp" -o "$(JINJA_DIR)/unicode.cpp" || exit 1
-
-# wrapper.cpp is our own — copy from the repo's jinja/ dir.
-$(JINJA_DIR)/wrapper.cpp: | $(JINJA_DIR)
-	@cp jinja/wrapper.cpp $(JINJA_DIR)/
-
-# Compile jinja sources into a static library. Uses -include cstring to avoid
-# the string.h / <string.h> filename collision with the system header.
-$(JINJA_DIR)/%.o: $(JINJA_DIR)/%.cpp $(JINJA_HEADERS)
+# -include cstring avoids the string.h / <string.h> filename collision.
+$(JINJA_DIR)/%.o: $(JINJA_DIR)/%.cpp
 	g++ -std=c++17 -O2 -c -include cstring -I$(LLAMA_DIR) "$<" -o "$@"
 
-build-jinja: $(JINJA_OBJECTS)
-	@ar rcs $(LLAMA_LIB)/libotjinja.a $(JINJA_OBJECTS)
-	@echo "Jinja: libotjinja.a built"
+build-jinja: $(JINJA_OBJ)
+	@ar rcs $(LLAMA_LIB)/libotjinja.a $(JINJA_OBJ)
 
 fetch-libs: | $(LLAMA_LIB)
 	@test -f $(OLLAMA_LIB_DIR)/libllama.so || { \
