@@ -20,22 +20,23 @@ type tokenResponse struct {
 	Count  int     `json:"count"`
 }
 
-var tokenCache = struct {
+// tokenizers caches a Tokenizer per model (vocab only — cheap, unbounded).
+var tokenizers = struct {
 	sync.RWMutex
 	m map[string]*ollamatokenizer.Tokenizer
 }{m: make(map[string]*ollamatokenizer.Tokenizer)}
 
 func getTokenizer(model string) (*ollamatokenizer.Tokenizer, error) {
-	tokenCache.RLock()
-	t, ok := tokenCache.m[model]
-	tokenCache.RUnlock()
+	tokenizers.RLock()
+	t, ok := tokenizers.m[model]
+	tokenizers.RUnlock()
 	if ok {
 		return t, nil
 	}
 
-	tokenCache.Lock()
-	defer tokenCache.Unlock()
-	if t, ok = tokenCache.m[model]; ok {
+	tokenizers.Lock()
+	defer tokenizers.Unlock()
+	if t, ok = tokenizers.m[model]; ok {
 		return t, nil
 	}
 
@@ -43,7 +44,7 @@ func getTokenizer(model string) (*ollamatokenizer.Tokenizer, error) {
 	if err != nil {
 		return nil, err
 	}
-	tokenCache.m[model] = t
+	tokenizers.m[model] = t
 	return t, nil
 }
 
@@ -136,16 +137,17 @@ func handleHealth(c *gin.Context) {
 var serveCmd = &cobra.Command{
 	Use:   "serve",
 	Short: "Start the tokenization HTTP server",
-	Long: `Start an HTTP server exposing tokenization endpoints that produce
-tokens identical to a running Ollama instance.
+	Long: `Start an HTTP tokenization server producing tokens identical to a running Ollama instance.
+
+Set OLLAMA_MODELS to your ollama model directory (e.g. /var/lib/ollama).
 
 Endpoints:
-  GET  /health               - health check
-  POST /tokenize             - tokenize raw text (no template)
-  POST /tokenize/generate    - tokenize a prompt (mirrors /api/generate)
-  POST /tokenize/chat        - tokenize messages (mirrors /api/chat)
+  GET  /health            - health check
+  POST /tokenize          - tokenize raw text (no template)
+  POST /tokenize/generate - tokenize a prompt (mirrors /api/generate)
+  POST /tokenize/chat     - tokenize messages (mirrors /api/chat)
 
-Both tokenization endpoints return: {"tokens": [...], "count": N}`,
+Returns: {"tokens": [...], "count": N}`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		port, _ := cmd.Flags().GetInt("port")
 

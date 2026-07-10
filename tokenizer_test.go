@@ -27,6 +27,21 @@ func listModels(t *testing.T) []string {
 	for n := range manifests {
 		names = append(names, n.DisplayShortest())
 	}
+	// OLLAMATOKENIZER_TEST_MODELS (comma-separated) restricts the set under test.
+	if filter := os.Getenv("OLLAMATOKENIZER_TEST_MODELS"); filter != "" {
+		want := strings.Split(filter, ",")
+		allowed := make(map[string]bool, len(want))
+		for _, w := range want {
+			allowed[strings.TrimSpace(w)] = true
+		}
+		filtered := names[:0]
+		for _, n := range names {
+			if allowed[n] {
+				filtered = append(filtered, n)
+			}
+		}
+		names = filtered
+	}
 	return names
 }
 
@@ -61,7 +76,7 @@ var thinkModes = []struct {
 	{"think_false", &api.ThinkValue{Value: false}},
 }
 
-// testMessages exercises tokenization edge cases (unicode, special chars, thinking tags, all roles).
+// testMessages exercises edge cases: unicode, special chars, think tags, all roles.
 var testMessages = []api.Message{
 	{Role: "system", Content: "You are a helpful assistant. Respond concisely. Use 中文 when asked."},
 	{Role: "user", Content: "Hello, 世界! What is 2+2?"},
@@ -87,9 +102,9 @@ func testPrompt() string {
 	return ""
 }
 
-// TestTokenizeGenerateMatchesAPI compares our tokens against the live /api/generate endpoint.
-// 1. Count match against prompt_eval_count (runner uses addSpecial=true, same as us).
-// 2. Token-by-token against context array (server uses addSpecial=false, so we skip our BOS prefix).
+// TestTokenizeGenerateMatchesAPI compares our tokens to live /api/generate.
+// Count vs prompt_eval_count (both addSpecial=true); token IDs vs context array
+// (server addSpecial=false, so our leading BOS is skipped before comparing).
 func TestTokenizeGenerateMatchesAPI(t *testing.T) {
 	ensureModelsDir(t)
 	apiURL := ollamaURL(t)
@@ -99,63 +114,66 @@ func TestTokenizeGenerateMatchesAPI(t *testing.T) {
 	}
 
 	for _, modelName := range models {
-		for _, tm := range thinkModes {
-			t.Run(fmt.Sprintf("%s/%s", modelName, tm.name), func(t *testing.T) {
-				t.Parallel()
+		modelName := modelName
+		t.Run(modelName, func(t *testing.T) {
+			t.Parallel()
 
-				tok, err := New(modelName)
-				if err != nil {
-					t.Fatalf("New(%q): %v", modelName, err)
-				}
+			tok, err := New(modelName)
+			if err != nil {
+				t.Fatalf("New(%q): %v", modelName, err)
+			}
 
-				ourTokens, err := tok.TokenizeGenerate(api.GenerateRequest{
-					Prompt: testPrompt(),
-					Think:  tm.think,
-				})
-				if err != nil {
-					t.Fatalf("TokenizeGenerate: %v", err)
-				}
-
-				apiTokens, promptEvalCount, err := apiGenerate(apiURL, modelName, testPrompt(), tm.think)
-				if err != nil {
-					if isUnsupportedError(err) {
-						t.Skipf("unsupported: %v", err)
+			for _, tm := range thinkModes {
+				t.Run(tm.name, func(t *testing.T) {
+					ourTokens, err := tok.TokenizeGenerate(api.GenerateRequest{
+						Prompt: testPrompt(),
+						Think:  tm.think,
+					})
+					if err != nil {
+						t.Fatalf("TokenizeGenerate: %v", err)
 					}
-					t.Fatalf("API /generate: %v", err)
-				}
 
-				if len(ourTokens) != promptEvalCount {
-					t.Errorf("token count mismatch: ours=%d API prompt_eval_count=%d",
-						len(ourTokens), promptEvalCount)
-				}
-
-				ourPromptTokens := ourTokens
-				if len(ourTokens) > 0 && len(apiTokens) > 0 && ourTokens[0] != int32(apiTokens[0]) {
-					ourPromptTokens = ourTokens[1:]
-				}
-
-				if len(ourPromptTokens) > len(apiTokens) {
-					t.Fatalf("our prompt tokens (%d) longer than API context (%d)", len(ourPromptTokens), len(apiTokens))
-				}
-
-				apiPromptTokens := apiTokens[:len(ourPromptTokens)]
-				if !tokenSlicesEqual(ourPromptTokens, apiPromptTokens) {
-					firstDiff := -1
-					for i := range ourPromptTokens {
-						if int(ourPromptTokens[i]) != apiTokens[i] {
-							firstDiff = i
-							break
+					apiTokens, promptEvalCount, err := apiGenerate(apiURL, modelName, testPrompt(), tm.think)
+					if err != nil {
+						if isUnsupportedError(err) {
+							t.Skipf("unsupported: %v", err)
 						}
+						t.Fatalf("API /generate: %v", err)
 					}
-					t.Errorf("token mismatch at position %d:\n  ours: %v\n  API:  %v\n  (our len=%d, API prompt_eval_count=%d, API context len=%d)",
-						firstDiff, ourPromptTokens, apiPromptTokens, len(ourTokens), promptEvalCount, len(apiTokens))
-				}
-			})
-		}
+
+					if len(ourTokens) != promptEvalCount {
+						t.Errorf("token count mismatch: ours=%d API prompt_eval_count=%d",
+							len(ourTokens), promptEvalCount)
+					}
+
+					ourPromptTokens := ourTokens
+					if len(ourTokens) > 0 && len(apiTokens) > 0 && ourTokens[0] != int32(apiTokens[0]) {
+						ourPromptTokens = ourTokens[1:]
+					}
+
+					if len(ourPromptTokens) > len(apiTokens) {
+						t.Fatalf("our prompt tokens (%d) longer than API context (%d)", len(ourPromptTokens), len(apiTokens))
+					}
+
+					apiPromptTokens := apiTokens[:len(ourPromptTokens)]
+					if !tokenSlicesEqual(ourPromptTokens, apiPromptTokens) {
+						firstDiff := -1
+						for i := range ourPromptTokens {
+							if int(ourPromptTokens[i]) != apiTokens[i] {
+								firstDiff = i
+								break
+							}
+						}
+						t.Errorf("token mismatch at position %d:\n  ours: %v\n  API:  %v\n  (our len=%d, API prompt_eval_count=%d, API context len=%d)",
+							firstDiff, ourPromptTokens, apiPromptTokens, len(ourTokens), promptEvalCount, len(apiTokens))
+					}
+				})
+			}
+		})
 	}
 }
 
-// TestTokenizeChatMatchesAPI compares our token count against the live /api/chat endpoint.
+// TestTokenizeChatMatchesAPI compares our token count to live /api/chat.
 func TestTokenizeChatMatchesAPI(t *testing.T) {
 	ensureModelsDir(t)
 	apiURL := ollamaURL(t)
@@ -165,37 +183,40 @@ func TestTokenizeChatMatchesAPI(t *testing.T) {
 	}
 
 	for _, modelName := range models {
-		for _, tm := range thinkModes {
-			t.Run(fmt.Sprintf("%s/%s", modelName, tm.name), func(t *testing.T) {
-				t.Parallel()
+		modelName := modelName
+		t.Run(modelName, func(t *testing.T) {
+			t.Parallel()
 
-				tok, err := New(modelName)
-				if err != nil {
-					t.Fatalf("New(%q): %v", modelName, err)
-				}
+			tok, err := New(modelName)
+			if err != nil {
+				t.Fatalf("New(%q): %v", modelName, err)
+			}
 
-				ourTokens, err := tok.TokenizeChat(api.ChatRequest{
-					Messages: testMessages,
-					Think:    tm.think,
-				})
-				if err != nil {
-					t.Fatalf("TokenizeChat: %v", err)
-				}
-
-				apiCount, err := apiChat(apiURL, modelName, testMessages, tm.think)
-				if err != nil {
-					if isUnsupportedError(err) {
-						t.Skipf("unsupported: %v", err)
+			for _, tm := range thinkModes {
+				t.Run(tm.name, func(t *testing.T) {
+					ourTokens, err := tok.TokenizeChat(api.ChatRequest{
+						Messages: testMessages,
+						Think:    tm.think,
+					})
+					if err != nil {
+						t.Fatalf("TokenizeChat: %v", err)
 					}
-					t.Fatalf("API /api/chat: %v", err)
-				}
 
-				if len(ourTokens) != apiCount {
-					t.Errorf("token count mismatch: ours=%d API=%d",
-						len(ourTokens), apiCount)
-				}
-			})
-		}
+					apiCount, err := apiChat(apiURL, modelName, testMessages, tm.think)
+					if err != nil {
+						if isUnsupportedError(err) {
+							t.Skipf("unsupported: %v", err)
+						}
+						t.Fatalf("API /api/chat: %v", err)
+					}
+
+					if len(ourTokens) != apiCount {
+						t.Errorf("token count mismatch: ours=%d API=%d",
+							len(ourTokens), apiCount)
+					}
+				})
+			}
+		})
 	}
 }
 

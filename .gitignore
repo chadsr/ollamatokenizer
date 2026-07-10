@@ -29,6 +29,8 @@ go.work.sum
 
 bin/
 include/
+# CGO build inputs (llama.cpp headers + ollama libs)
+llama-cpp/
 
 # Editor/IDE
 # .idea/

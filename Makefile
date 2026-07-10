@@ -1,55 +1,102 @@
-# Requires CGO (llama.cpp tokenizer). The include/ directory contains C++ headers
-# stripped by the Go module proxy. Run "make update-headers" after changing go.mod.
+# CGO build against ollama's bundled libllama.so. llama-cpp/ (headers + libs)
+# is gitignored; `make fetch-deps` populates it, pinned to go.mod's ollama version.
 #
-#   make build            # Build the CLI tool
-#   make update-headers   # Re-download C++ headers after changing go.mod
+#   make fetch-deps    # fetch llama.cpp headers + copy ollama libs into llama-cpp/
+#   make build         # build the CLI (implies fetch-deps)
+#   make docker-build  # build the Docker image (ollama version pinned via go.mod)
+#   make tidy          # go mod tidy
+#   make clean         # remove bin/
+#   make clean-deps    # also remove llama-cpp/
 
 GO ?= go
 GOFLAGS ?=
 BUILD_DIR := bin
+DOCKER_IMAGE ?= ollamatokenizer
 
-OLLAMA_VERSION := $(shell grep 'github.com/ollama/ollama' go.mod | awk '{print $$2}')
-INCLUDE_DIR := include
+# ollama version from go.mod → llama.cpp version recorded at that tag.
+OLLAMA_VERSION := $(shell awk '/github\.com\/ollama\/ollama/ {print $$2}' go.mod)
+LLAMA_CPP_VERSION_FILE := llama-cpp/.LLAMA_CPP_VERSION
+LLAMA_CPP_VERSION := $(shell cat $(LLAMA_CPP_VERSION_FILE) 2>/dev/null)
+ifndef LLAMA_CPP_VERSION
+LLAMA_CPP_VERSION := $(shell curl -fsSL https://raw.githubusercontent.com/ollama/ollama/$(OLLAMA_VERSION)/LLAMA_CPP_VERSION 2>/dev/null)
+endif
 
-HEADER_FILES := \
-	$(INCLUDE_DIR)/nlohmann/json.hpp \
-	$(INCLUDE_DIR)/nlohmann/json_fwd.hpp \
-	$(INCLUDE_DIR)/stb/stb_image.h \
-	$(INCLUDE_DIR)/miniaudio/miniaudio.h
+LLAMA_DIR     := llama-cpp
+LLAMA_INCLUDE := $(LLAMA_DIR)/include
+LLAMA_GGML    := $(LLAMA_DIR)/ggml/include
+LLAMA_LIB     := $(LLAMA_DIR)/lib
 
-GITHUB_BASE := https://raw.githubusercontent.com/ollama/ollama/$(OLLAMA_VERSION)
+# Source of libllama.so + libggml*.so: host ollama install by default (matches
+# the running server). In Docker: make fetch-deps OLLAMA_LIB_DIR=/ollama-libs
+OLLAMA_LIB_DIR ?= /usr/lib/ollama
 
-# Satisfies #include "nlohmann/json.hpp" etc. that the module cache lacks.
-CGO_CPPFLAGS := -I$(CURDIR)/$(INCLUDE_DIR)
+LLAMA_SRC := https://raw.githubusercontent.com/ggml-org/llama.cpp/$(LLAMA_CPP_VERSION)
 
-.PHONY: all build update-headers tidy clean
+LLAMA_HEADERS := \
+	$(LLAMA_INCLUDE)/llama.h \
+	$(LLAMA_INCLUDE)/llama-cpp.h \
+	$(LLAMA_GGML)/ggml.h \
+	$(LLAMA_GGML)/ggml-alloc.h \
+	$(LLAMA_GGML)/ggml-backend.h \
+	$(LLAMA_GGML)/ggml-cpp.h \
+	$(LLAMA_GGML)/ggml-cpu.h \
+	$(LLAMA_GGML)/ggml-opt.h \
+	$(LLAMA_GGML)/gguf.h
+
+.PHONY: all build fetch-deps fetch-headers fetch-libs docker-build tidy clean clean-deps
 
 all: build
 
-$(INCLUDE_DIR)/nlohmann/json.hpp: | $(INCLUDE_DIR)/nlohmann
-	@curl -fsSL "$(GITHUB_BASE)/llama/llama.cpp/vendor/nlohmann/json.hpp" -o "$@"
+# Per-file header fetch from llama.cpp at LLAMA_CPP_VERSION.
+define fetch_header
+$(1): | $(2)
+	@curl -fsSL "$(LLAMA_SRC)/$(3)" -o "$$@"
+endef
 
-$(INCLUDE_DIR)/nlohmann/json_fwd.hpp: | $(INCLUDE_DIR)/nlohmann
-	@curl -fsSL "$(GITHUB_BASE)/llama/llama.cpp/vendor/nlohmann/json_fwd.hpp" -o "$@"
-
-$(INCLUDE_DIR)/stb/stb_image.h: | $(INCLUDE_DIR)/stb
-	@curl -fsSL "$(GITHUB_BASE)/llama/llama.cpp/vendor/stb/stb_image.h" -o "$@"
-
-$(INCLUDE_DIR)/miniaudio/miniaudio.h: | $(INCLUDE_DIR)/miniaudio
-	@curl -fsSL "$(GITHUB_BASE)/llama/llama.cpp/vendor/miniaudio/miniaudio.h" -o "$@"
-
-$(INCLUDE_DIR)/nlohmann $(INCLUDE_DIR)/stb $(INCLUDE_DIR)/miniaudio:
+$(LLAMA_INCLUDE) $(LLAMA_GGML) $(LLAMA_LIB):
 	@mkdir -p "$@"
 
-update-headers: $(HEADER_FILES)
-	@echo "Headers updated for ollama $(OLLAMA_VERSION)"
+$(eval $(call fetch_header,$(LLAMA_INCLUDE)/llama.h,$(LLAMA_INCLUDE),include/llama.h))
+$(eval $(call fetch_header,$(LLAMA_INCLUDE)/llama-cpp.h,$(LLAMA_INCLUDE),include/llama-cpp.h))
+$(eval $(call fetch_header,$(LLAMA_GGML)/ggml.h,$(LLAMA_GGML),ggml/include/ggml.h))
+$(eval $(call fetch_header,$(LLAMA_GGML)/ggml-alloc.h,$(LLAMA_GGML),ggml/include/ggml-alloc.h))
+$(eval $(call fetch_header,$(LLAMA_GGML)/ggml-backend.h,$(LLAMA_GGML),ggml/include/ggml-backend.h))
+$(eval $(call fetch_header,$(LLAMA_GGML)/ggml-cpp.h,$(LLAMA_GGML),ggml/include/ggml-cpp.h))
+$(eval $(call fetch_header,$(LLAMA_GGML)/ggml-cpu.h,$(LLAMA_GGML),ggml/include/ggml-cpu.h))
+$(eval $(call fetch_header,$(LLAMA_GGML)/ggml-opt.h,$(LLAMA_GGML),ggml/include/ggml-opt.h))
+$(eval $(call fetch_header,$(LLAMA_GGML)/gguf.h,$(LLAMA_GGML),ggml/include/gguf.h))
+
+fetch-headers: $(LLAMA_HEADERS)
+	@mkdir -p $(LLAMA_DIR)
+	@printf '%s' $(LLAMA_CPP_VERSION) > $(LLAMA_CPP_VERSION_FILE)
+	@echo "Headers: llama.cpp $(LLAMA_CPP_VERSION) (via ollama $(OLLAMA_VERSION))"
+
+fetch-libs: | $(LLAMA_LIB)
+	@test -f $(OLLAMA_LIB_DIR)/libllama.so || { \
+		echo "ollama libs not found in $(OLLAMA_LIB_DIR)"; \
+		echo "install ollama, or: make fetch-deps OLLAMA_LIB_DIR=<dir>"; exit 1; }
+	cp -a $(OLLAMA_LIB_DIR)/libllama.so*     $(LLAMA_LIB)/
+	cp -a $(OLLAMA_LIB_DIR)/libggml.so*      $(LLAMA_LIB)/
+	cp -a $(OLLAMA_LIB_DIR)/libggml-base.so* $(LLAMA_LIB)/
+	@echo "Libs: copied from $(OLLAMA_LIB_DIR)"
+
+fetch-deps: fetch-headers fetch-libs
 
 tidy:
 	$(GO) mod tidy $(GOFLAGS)
 
-build: $(HEADER_FILES)
+build: fetch-deps
 	@mkdir -p $(BUILD_DIR)
-	CGO_ENABLED=1 CGO_CPPFLAGS="$(CGO_CPPFLAGS)" $(GO) build $(GOFLAGS) -o $(BUILD_DIR)/ollamatokenizer ./cmd/ollamatokenizer
+	CGO_ENABLED=1 $(GO) build -trimpath $(GOFLAGS) -o $(BUILD_DIR)/ollamatokenizer ./cmd/ollamatokenizer
+
+# Single-sourced Docker build: OLLAMA_VERSION comes from go.mod and is passed as
+# a build-arg (the Dockerfile has no default — Docker can't read go.mod to resolve
+# the FROM tag at parse time). CI does the same derivation.
+docker-build:
+	docker build --build-arg OLLAMA_VERSION=$(OLLAMA_VERSION) -t $(DOCKER_IMAGE) .
 
 clean:
 	rm -rf $(BUILD_DIR)
+
+clean-deps:
+	rm -rf $(LLAMA_DIR)

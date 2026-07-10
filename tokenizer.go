@@ -1,121 +1,75 @@
-// Package ollamatokenizer provides a simple interface to ollama's internal tokenization functionality.
+// Package ollamatokenizer exposes ollama's tokenization without loading model
+// weights, by linking ollama's bundled libllama.so and loading each GGUF
+// vocab-only. Token IDs are byte-identical to a running ollama server.
 package ollamatokenizer
 
 import (
 	"bytes"
 	"fmt"
-	"log/slog"
-	"os"
 	"slices"
+	"strconv"
+	"strings"
 
 	"github.com/ollama/ollama/api"
-	"github.com/ollama/ollama/envconfig"
-	fsggml "github.com/ollama/ollama/fs/ggml"
-	"github.com/ollama/ollama/llama"
-	"github.com/ollama/ollama/model"
-	_ "github.com/ollama/ollama/model/models" // register all model architectures
+	"github.com/ollama/ollama/format"
 	"github.com/ollama/ollama/model/parsers"
 	"github.com/ollama/ollama/model/renderers"
 	"github.com/ollama/ollama/server"
 	"github.com/ollama/ollama/template"
 	"github.com/ollama/ollama/thinking"
-	"github.com/ollama/ollama/tokenizer"
 	modelname "github.com/ollama/ollama/types/model"
 )
 
 const errPfx = "ollamatokenizer: "
 
-// ErrNotImplemented is returned when a request uses options that this library
-// does not support.
+// ErrNotImplemented is returned for unsupported request options.
 var ErrNotImplemented = fmt.Errorf("not implemented")
 
-// Tokenizer wraps an Ollama tokenizer for a specific model.
+// Tokenizer encodes text for a model using llama.cpp's real tokenizer, loaded vocab-only.
 type Tokenizer struct {
-	engine tokenizer.Tokenizer // native Ollama engine (pure Go)
-	llama  *llama.Model        // llama.cpp tokenizer (CGO)
-	model  *server.Model       // loaded via server.GetModel()
+	tok   *cgoVocab
+	model *server.Model
 }
 
-// New creates a Tokenizer for the given model name (e.g. "llama3.2:3b").
-// The model must have been pulled via `ollama pull`.
-// https://github.com/ollama/ollama/blob/v0.20.7/llm/server.go#L144-L164
+// New returns a Tokenizer for a pulled model; only the GGUF vocab is read.
+// https://github.com/ollama/ollama/blob/v0.31.2/server/images.go#L641
 func New(name string) (*Tokenizer, error) {
-	// https://github.com/ollama/ollama/blob/v0.20.7/server/images.go#L297-L395
 	m, err := server.GetModel(name)
 	if err != nil {
 		return nil, fmt.Errorf(errPfx+"model %q not found (try `ollama pull %s`): %w", name, name, err)
 	}
-
-	t := &Tokenizer{model: m}
-
-	f, err := os.Open(m.ModelPath)
+	tok, err := newCGOVocab(m.ModelPath)
 	if err != nil {
-		return nil, fmt.Errorf(errPfx+"open model file: %w", err)
+		return nil, fmt.Errorf(errPfx+"model %q: %w", name, err)
 	}
-	defer f.Close()
-
-	ggmlFile, err := fsggml.Decode(f, -1)
-	if err != nil {
-		return nil, fmt.Errorf(errPfx+"decode GGUF metadata: %w", err)
-	}
-
-	// https://github.com/ollama/ollama/blob/v0.20.7/llm/server.go#L148-L164
-	var engine tokenizer.Tokenizer
-	if envconfig.NewEngine() || ggmlFile.KV().OllamaEngineRequired() {
-		tp, tpErr := model.NewTextProcessor(m.ModelPath)
-		if tpErr != nil {
-			// https://github.com/ollama/ollama/blob/v0.20.7/llm/server.go#L155-L157
-			slog.Debug("model not yet supported by Ollama engine, switching to compatibility mode", "model", m.ModelPath, "error", tpErr)
-		} else {
-			engine = tp
-		}
-	}
-	if engine == nil {
-		// https://github.com/ollama/ollama/blob/v0.20.7/llm/server.go#L160
-		llamaModel, err := llama.LoadModelFromFile(m.ModelPath, llama.ModelParams{VocabOnly: true})
-		if err != nil {
-			return nil, fmt.Errorf(errPfx+"llama.cpp tokenizer for %q: %w", name, err)
-		}
-		t.llama = llamaModel
-	} else {
-		t.engine = engine
-	}
-	return t, nil
+	return &Tokenizer{tok: tok, model: m}, nil
 }
 
-// hasThinking reports whether the model supports thinking.
-// https://github.com/ollama/ollama/blob/v0.20.7/server/routes.go#L396
+// Close releases the vocab handle.
+func (t *Tokenizer) Close() {
+	if t != nil && t.tok != nil {
+		t.tok.Close()
+	}
+}
+
+// Tokenize encodes raw text. addSpecial applies BOS/EOS per the vocab; parseSpecial
+// parses special-token strings (e.g. <|im_start|>) into their IDs.
+func (t *Tokenizer) Tokenize(text string, addSpecial, parseSpecial bool) ([]int32, error) {
+	tokens, err := t.tok.Encode(text, addSpecial, parseSpecial)
+	if err != nil {
+		return nil, fmt.Errorf(errPfx+"tokenize: %w", err)
+	}
+	return tokens, nil
+}
+
+// hasThinking mirrors server.routes thinking detection.
+// https://github.com/ollama/ollama/blob/v0.31.2/server/routes.go#L2621-L2635
 func (t *Tokenizer) hasThinking() bool {
 	return slices.Contains(t.model.Capabilities(), modelname.CapabilityThinking)
 }
 
-// Tokenize encodes text into token IDs without applying any chat template.
-// addSpecial: prepend BOS/append EOS if the model's vocab requires it (AddBOS/AddEOS GGUF metadata).
-// parseSpecial: parse special token strings in text (e.g. <|im_start|>) into token IDs.
-// https://github.com/ollama/ollama/blob/v0.20.7/runner/ollamarunner/runner.go#L246
-// https://github.com/ollama/ollama/blob/v0.20.7/runner/llamarunner/runner.go#L211
-func (t *Tokenizer) Tokenize(text string, addSpecial, parseSpecial bool) ([]int32, error) {
-	if t.engine != nil {
-		tokens, err := t.engine.Encode(text, addSpecial)
-		if err != nil {
-			return nil, fmt.Errorf(errPfx+"tokenize: %w", err)
-		}
-		return tokens, nil
-	}
-
-	tokens, err := t.llama.Tokenize(text, addSpecial, parseSpecial)
-	if err != nil {
-		return nil, fmt.Errorf(errPfx+"tokenize: %w", err)
-	}
-	result := make([]int32, len(tokens))
-	for i, tok := range tokens {
-		result[i] = int32(tok)
-	}
-	return result, nil
-}
-
-// resolveThink resolves the think parameter, defaulting to true for thinking-capable models.
-// https://github.com/ollama/ollama/blob/v0.20.7/server/routes.go#L396-L406
+// resolveThink defaults think to true for thinking-capable models when unset.
+// https://github.com/ollama/ollama/blob/v0.31.2/server/routes.go#L2621-L2635
 func (t *Tokenizer) resolveThink(think *api.ThinkValue) *api.ThinkValue {
 	if think != nil {
 		return think
@@ -126,15 +80,23 @@ func (t *Tokenizer) resolveThink(think *api.ThinkValue) *api.ThinkValue {
 	return nil
 }
 
-// renderPrompt renders the prompt via renderer or template.
-// https://github.com/ollama/ollama/blob/v0.20.7/server/prompt.go#L116-L136
+// renderPrompt mirrors server.renderPrompt, plus an in-process native-Jinja path.
+// https://github.com/ollama/ollama/blob/v0.31.2/server/prompt.go#L135-L156
 func (t *Tokenizer) renderPrompt(msgs []api.Message, tools []api.Tool, think *api.ThinkValue) (string, error) {
 	if t.model.Config.Renderer != "" {
-		rendered, err := renderers.RenderWithRenderer(t.model.Config.Renderer, msgs, tools, think)
+		rendered, err := renderers.RenderWithRenderer(resolveRendererName(t.model), msgs, tools, think)
 		if err != nil {
 			return "", fmt.Errorf(errPfx+"renderer %q: %w", t.model.Config.Renderer, err)
 		}
 		return rendered, nil
+	}
+
+	if nativeJinja(t.model) {
+		return t.renderNativeJinja(msgs)
+	}
+
+	if t.model.Template == nil {
+		return "", fmt.Errorf(errPfx+"model %q has no Go chat template: %w", t.model.Name, ErrNotImplemented)
 	}
 
 	var b bytes.Buffer
@@ -156,13 +118,209 @@ func (t *Tokenizer) renderPrompt(msgs []api.Message, tools []api.Tool, think *ap
 	return b.String(), nil
 }
 
-// TokenizeGenerate tokenizes a prompt matching /api/generate.
-// Note: the server's chatPrompt performs context-length truncation that we do not replicate;
-// for prompts within the context window, the rendered output is identical.
-//
-// Unsupported options (return ErrNotImplemented): Suffix, Template, Raw, Context, Images.
-//
-// https://github.com/ollama/ollama/blob/v0.20.7/server/routes.go#L456-L503
+// nativeJinja mirrors chatModeForModel(m) == native for the no-Renderer/Parser case;
+// PreferChatTemplate is set by ollama when the GGUF chat_template beats the Go TEMPLATE.
+// https://github.com/ollama/ollama/blob/v0.31.2/server/routes.go#L2362-L2380
+func nativeJinja(m *server.Model) bool {
+	if m == nil || !m.HasChatTemplate {
+		return false
+	}
+	if m.Config.Renderer != "" || m.Config.Parser != "" || shouldUseHarmony(m) {
+		return false
+	}
+	return m.PreferChatTemplate || !m.HasGoTemplate
+}
+
+// renderNativeJinja approximates llama-server's Jinja (minja) — which lives only
+// in the llama-server binary — using llama.cpp's builtin template engine plus
+// two behaviors the builtin drops: the literal prefix baked before the message
+// loop (e.g. phi4's embedded system), and merging system into the first user
+// message when the loop has no system branch.
+func (t *Tokenizer) renderNativeJinja(msgs []api.Message) (string, error) {
+	tmpl := t.tok.ChatTemplate()
+	loop := loopBody(tmpl)
+	chatMsgs := msgs
+	if loop != "" && !systemBranchInLoop(loop) {
+		chatMsgs = mergeSystemIntoUser(chatMsgs)
+	}
+	cm := make([]ChatMessage, 0, len(chatMsgs))
+	for _, m := range chatMsgs {
+		cm = append(cm, ChatMessage{Role: m.Role, Content: m.Content})
+	}
+	rendered, err := t.tok.RenderChat(cm, true)
+	if err != nil {
+		return "", fmt.Errorf(errPfx+"native chat template for %q: %w", t.model.Name, err)
+	}
+	if baked := bakedLiteralPrefix(tmpl); baked != "" {
+		rendered = baked + rendered
+	}
+	// Restore a {{ bos_token }} the builtin drops (deepseek-r1 etc.). Only when
+	// the tokenizer itself won't add BOS, else it would be double-counted.
+	if !t.tok.AddBOS() && templateEmitsBosToken(tmpl) {
+		rendered = t.tok.BOSPiece() + rendered
+	}
+	return rendered, nil
+}
+
+// templateEmitsBosToken reports whether {{ bos_token }} is emitted outside the
+// render loop (minja substitutes it; the builtin renderer drops it). The render
+// loop is the LAST {% for %}; some templates have an earlier extraction loop.
+func templateEmitsBosToken(tmpl string) bool {
+	i := strings.LastIndex(tmpl, "{% for")
+	if j := strings.LastIndex(tmpl, "{%- for"); j > i {
+		i = j
+	}
+	head := tmpl
+	if i >= 0 {
+		head = tmpl[:i]
+	}
+	return strings.Contains(head, "{{ bos_token }}") || strings.Contains(head, "{{bos_token}}")
+}
+
+// bakedLiteralPrefix returns literal text the template emits before {% for },
+// or "" if that region holds Jinja logic rather than verbatim text.
+func bakedLiteralPrefix(tmpl string) string {
+	i := strings.Index(tmpl, "{% for")
+	if i < 0 {
+		i = strings.Index(tmpl, "{%- for")
+	}
+	if i <= 0 {
+		return ""
+	}
+	head := tmpl[:i]
+	if strings.Contains(head, "{%") || strings.Contains(head, "{{") {
+		return ""
+	}
+	return head
+}
+
+// loopBody returns the {% for %}...{% endfor %} substring, or "" if absent.
+func loopBody(tmpl string) string {
+	i := strings.Index(tmpl, "{% for")
+	if i < 0 {
+		i = strings.Index(tmpl, "{%- for")
+	}
+	if i < 0 {
+		return ""
+	}
+	if j := strings.Index(tmpl[i:], "{% endfor"); j >= 0 {
+		return tmpl[i : i+j]
+	}
+	return ""
+}
+
+// systemBranchInLoop reports whether the loop handles role == "system".
+func systemBranchInLoop(loop string) bool { return strings.Contains(loop, "system") }
+
+// mergeSystemIntoUser prepends all system contents to the first user message,
+// matching llama.cpp's handling of templates whose loop ignores system.
+func mergeSystemIntoUser(msgs []api.Message) []api.Message {
+	var sys []string
+	rest := msgs[:0:0]
+	for _, m := range msgs {
+		if m.Role == "system" {
+			sys = append(sys, m.Content)
+		} else {
+			rest = append(rest, m)
+		}
+	}
+	if len(sys) == 0 {
+		return msgs
+	}
+	merged := strings.Join(sys, "\n")
+	for i, m := range rest {
+		if m.Role == "user" {
+			rest[i].Content = merged + "\n" + m.Content
+			return rest
+		}
+	}
+	return append([]api.Message{{Role: "user", Content: merged}}, rest...)
+}
+
+// completionPrompt mirrors llamaServerRunner.completionPrompt: strip the textual
+// BOS the renderer emitted when llama.cpp will also add BOS, else it's counted twice.
+// https://github.com/ollama/ollama/blob/v0.31.2/llm/llama_server.go#L240-L252
+func (t *Tokenizer) completionPrompt(prompt string) string {
+	if !t.tok.AddBOS() {
+		return prompt
+	}
+	if t.model.Config.Renderer != "" {
+		if lb := renderers.LeadingBOSForRenderer(resolveRendererName(t.model)); lb != "" && strings.HasPrefix(prompt, lb) {
+			return strings.TrimPrefix(prompt, lb)
+		}
+	}
+	if strings.HasPrefix(prompt, "<bos>") {
+		return strings.TrimPrefix(prompt, "<bos>")
+	}
+	return prompt
+}
+
+// filterThinkTags strips <think> from prior assistant turns for qwen3 / deepseek-r1.
+// https://github.com/ollama/ollama/blob/v0.31.2/server/routes.go#L3120-L3146
+func filterThinkTags(msgs []api.Message, m *server.Model) []api.Message {
+	if m.Config.ModelFamily == "qwen3" || modelname.ParseName(m.Name).Model == "deepseek-r1" {
+		finalUserIndex := -1
+		for i, msg := range msgs {
+			if msg.Role == "user" {
+				finalUserIndex = i
+			}
+		}
+		for i, msg := range msgs {
+			if msg.Role == "assistant" && i < finalUserIndex {
+				thinkingState := &thinking.Parser{
+					OpeningTag: "<think>",
+					ClosingTag: "</think>",
+				}
+				_, content := thinkingState.AddContent(msg.Content)
+				msgs[i].Content = content
+			}
+		}
+	}
+	return msgs
+}
+
+// shouldUseHarmony mirrors server.shouldUseHarmony (gpt-oss).
+// https://github.com/ollama/ollama/blob/v0.31.2/server/routes.go#L78-L88
+func shouldUseHarmony(m *server.Model) bool {
+	if slices.Contains([]string{"gptoss", "gpt-oss"}, m.Config.ModelFamily) {
+		if m.Template.Contains("<|start|>") && m.Template.Contains("<|end|>") {
+			return true
+		}
+	}
+	return false
+}
+
+// processTools mirrors the chat handler's harmony + builtin-parser setup.
+// https://github.com/ollama/ollama/blob/v0.31.2/server/routes.go#L2667-L2700
+func processTools(m *server.Model, tools []api.Tool, msgs []api.Message, think *api.ThinkValue) []api.Tool {
+	if shouldUseHarmony(m) {
+		// harmony only understands low/medium/high; map "max" -> "high".
+		if think != nil {
+			if s, ok := think.Value.(string); ok && s == "max" {
+				think.Value = "high"
+			}
+		}
+		if m.Config.Parser == "" {
+			m.Config.Parser = "harmony"
+		}
+	}
+
+	processedTools := tools
+	if m.Config.Parser != "" {
+		if p := parsers.ParserForName(m.Config.Parser); p != nil {
+			var lastMessage *api.Message
+			if len(msgs) > 0 {
+				lastMessage = &msgs[len(msgs)-1]
+			}
+			processedTools = p.Init(tools, lastMessage, think)
+		}
+	}
+	return processedTools
+}
+
+// TokenizeGenerate mirrors /api/generate's prompt assembly (no context truncation).
+// Unsupported (ErrNotImplemented): Suffix, Template, Raw, Context, Images.
+// https://github.com/ollama/ollama/blob/v0.31.2/server/routes.go#L568-L620
 func (t *Tokenizer) TokenizeGenerate(req api.GenerateRequest) ([]int32, error) {
 	if req.Suffix != "" {
 		return nil, fmt.Errorf(errPfx+"suffix (insert mode) is not implemented: %w", ErrNotImplemented)
@@ -186,86 +344,18 @@ func (t *Tokenizer) TokenizeGenerate(req api.GenerateRequest) ([]int32, error) {
 	} else if t.model.System != "" {
 		msgs = append(msgs, api.Message{Role: "system", Content: t.model.System})
 	}
-
 	msgs = append(msgs, t.model.Messages...)
 	msgs = append(msgs, api.Message{Role: "user", Content: req.Prompt})
 
-	think := t.resolveThink(req.Think)
-	rendered, err := t.renderPrompt(msgs, nil, think)
+	rendered, err := t.renderPrompt(msgs, nil, t.resolveThink(req.Think))
 	if err != nil {
 		return nil, err
 	}
-
-	return t.Tokenize(rendered, true, true)
+	return t.Tokenize(t.completionPrompt(rendered), true, true)
 }
 
-// shouldUseHarmony detects harmony-based models.
-// https://github.com/ollama/ollama/blob/v0.20.7/server/routes.go#L80-L90
-func shouldUseHarmony(m *server.Model) bool {
-	if slices.Contains([]string{"gptoss", "gpt-oss"}, m.Config.ModelFamily) {
-		if m.Template.Contains("<|start|>") && m.Template.Contains("<|end|>") {
-			return true
-		}
-	}
-
-	return false
-}
-
-// processTools initializes the built-in parser and returns processed tools.
-// https://github.com/ollama/ollama/blob/v0.20.7/server/routes.go#L2323-L2341
-func (t *Tokenizer) processTools(tools []api.Tool, msgs []api.Message, think *api.ThinkValue) []api.Tool {
-	// https://github.com/ollama/ollama/blob/v0.20.7/server/routes.go#L2323-L2325
-	if shouldUseHarmony(t.model) && t.model.Config.Parser == "" {
-		t.model.Config.Parser = "harmony"
-	}
-
-	var builtinParser parsers.Parser
-	processedTools := tools
-
-	if t.model.Config.Parser != "" {
-		builtinParser = parsers.ParserForName(t.model.Config.Parser)
-		if builtinParser != nil {
-			var lastMessage *api.Message
-			if len(msgs) > 0 {
-				lastMessage = &msgs[len(msgs)-1]
-			}
-			processedTools = builtinParser.Init(tools, lastMessage, think)
-		}
-	}
-
-	return processedTools
-}
-
-// filterThinkTags strips thinking content from assistant messages for qwen3 and deepseek-r1 models.
-// https://github.com/ollama/ollama/blob/v0.20.7/server/routes.go#L2642-L2668
-func filterThinkTags(msgs []api.Message, m *server.Model) []api.Message {
-	if m.Config.ModelFamily == "qwen3" || modelname.ParseName(m.Name).Model == "deepseek-r1" {
-		finalUserIndex := -1
-		for i, msg := range msgs {
-			if msg.Role == "user" {
-				finalUserIndex = i
-			}
-		}
-
-		for i, msg := range msgs {
-			if msg.Role == "assistant" && i < finalUserIndex {
-				thinkingState := &thinking.Parser{
-					OpeningTag: "<think>",
-					ClosingTag: "</think>",
-				}
-				_, content := thinkingState.AddContent(msg.Content)
-				msgs[i].Content = content
-			}
-		}
-	}
-	return msgs
-}
-
-// TokenizeChat tokenizes messages matching /api/chat.
-// Note: the server's chatPrompt performs context-length truncation that we do not replicate;
-// for prompts within the context window, the rendered output is identical.
-//
-// https://github.com/ollama/ollama/blob/v0.20.7/server/routes.go#L2276-L2347
+// TokenizeChat mirrors /api/chat's prompt assembly (no context truncation).
+// https://github.com/ollama/ollama/blob/v0.31.2/server/routes.go#L2667-L2705
 func (t *Tokenizer) TokenizeChat(req api.ChatRequest) ([]int32, error) {
 	msgs := append(t.model.Messages, req.Messages...)
 	if len(req.Messages) > 0 && req.Messages[0].Role != "system" && t.model.System != "" {
@@ -273,15 +363,88 @@ func (t *Tokenizer) TokenizeChat(req api.ChatRequest) ([]int32, error) {
 	}
 	msgs = filterThinkTags(msgs, t.model)
 
-	// https://github.com/ollama/ollama/blob/v0.20.7/server/routes.go#L2277-L2281
 	think := t.resolveThink(req.Think)
-
-	processedTools := t.processTools(req.Tools, msgs, think)
+	processedTools := processTools(t.model, req.Tools, msgs, think)
 
 	rendered, err := t.renderPrompt(msgs, processedTools, think)
 	if err != nil {
 		return nil, err
 	}
+	return t.Tokenize(t.completionPrompt(rendered), true, true)
+}
 
-	return t.Tokenize(rendered, true, true)
+// gemma4 renderer resolution — verbatim mirror of server/renderer_resolution.go.
+// https://github.com/ollama/ollama/blob/v0.31.2/server/renderer_resolution.go
+
+func resolveRendererName(m *server.Model) string {
+	if m == nil || m.Config.Renderer == "" {
+		return ""
+	}
+	if m.Config.Renderer == "gemma4" {
+		return resolveGemma4Renderer(m)
+	}
+	return m.Config.Renderer
+}
+
+func resolveGemma4Renderer(m *server.Model) string {
+	if m == nil || m.Config.Renderer != "gemma4" {
+		if m == nil {
+			return "gemma4"
+		}
+		return m.Config.Renderer
+	}
+	if renderer, ok := gemma4RendererFromName(m.ShortName); ok {
+		return renderer
+	}
+	if renderer, ok := gemma4RendererFromName(m.Name); ok {
+		return renderer
+	}
+	if parameterCount, ok := parseHumanParameterCount(m.Config.ModelType); ok {
+		return gemma4RendererForParameterCount(parameterCount)
+	}
+	return "gemma4-small"
+}
+
+const gemma4LargeMinParameterCount = 12_000_000_000
+
+func gemma4RendererForParameterCount(parameterCount uint64) string {
+	if parameterCount >= gemma4LargeMinParameterCount {
+		return "gemma4-large"
+	}
+	return "gemma4-small"
+}
+
+func gemma4RendererFromName(name string) (string, bool) {
+	lower := strings.ToLower(name)
+	switch {
+	case strings.Contains(lower, "e2b"), strings.Contains(lower, "e4b"):
+		return "gemma4-small", true
+	case strings.Contains(lower, "12b"), strings.Contains(lower, "26b"), strings.Contains(lower, "31b"):
+		return "gemma4-large", true
+	default:
+		return "", false
+	}
+}
+
+func parseHumanParameterCount(s string) (uint64, bool) {
+	if s == "" {
+		return 0, false
+	}
+	unit := strings.ToUpper(s[len(s)-1:])
+	var multiplier float64
+	switch unit {
+	case "B":
+		multiplier = float64(format.Billion)
+	case "M":
+		multiplier = float64(format.Million)
+	case "K":
+		multiplier = float64(format.Thousand)
+	default:
+		return 0, false
+	}
+	value, err := strconv.ParseFloat(s[:len(s)-1], 64)
+	if err != nil {
+		return 0, false
+	}
+	return uint64(value * multiplier), true
 }
