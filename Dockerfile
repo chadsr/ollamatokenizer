@@ -2,7 +2,7 @@
 #
 # glibc-based (Ubuntu): libllama.so from the ollama image won't load under musl.
 # go.mod carries a leading "v"; the Docker Hub tag does not, so strip it.
-ARG OLLAMA_VERSION
+ARG OLLAMA_VERSION=latest
 FROM ollama/ollama:${OLLAMA_VERSION#v} AS ollama-libs
 
 FROM golang:1.26-trixie AS builder
