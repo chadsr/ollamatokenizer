@@ -22,7 +22,7 @@ COPY --from=ollama-libs /usr/lib/ollama/libllama.so* /usr/lib/ollama/libggml.so*
 RUN make build OLLAMA_LIB_DIR=/ollama-libs \
     && mkdir -p /out && cp bin/ollamatokenizer /out/
 
-FROM ubuntu:24.04
+FROM ubuntu:26.04
 RUN apt-get update \
     && apt-get install -y --no-install-recommends libstdc++6 libgcc-s1 wget \
     && rm -rf /var/lib/apt/lists/* \
