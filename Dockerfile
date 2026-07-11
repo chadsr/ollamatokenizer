@@ -19,8 +19,8 @@ COPY . .
 # Stage the pinned ollama libs where `make fetch-deps` expects them, then run the
 # same target as local dev.
 COPY --from=ollama-libs /usr/lib/ollama/libllama.so* /usr/lib/ollama/libggml.so* /usr/lib/ollama/libggml-base.so* /ollama-libs/
-RUN make fetch-deps OLLAMA_LIB_DIR=/ollama-libs \
-    && CGO_ENABLED=1 go build -trimpath -o /out/ollamatokenizer ./cmd/ollamatokenizer
+RUN make build OLLAMA_LIB_DIR=/ollama-libs \
+    && mkdir -p /out && cp bin/ollamatokenizer /out/
 
 FROM ubuntu:24.04
 RUN apt-get update \
