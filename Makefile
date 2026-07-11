@@ -1,8 +1,8 @@
 # CGO build against ollama's bundled libllama.so. llama-cpp/ (headers + libs)
 # is gitignored; `make fetch-deps` populates it, pinned to go.mod's ollama version.
 #
-#   make fetch-deps    # fetch llama.cpp headers + copy ollama libs into llama-cpp/
-#   make build         # build the CLI (implies fetch-deps)
+#   make fetch-deps    # fetch llama.cpp headers + jinja sources + copy ollama libs
+#   make build         # build the CLI (implies fetch-deps + build-jinja)
 #   make docker-build  # build the Docker image (ollama version pinned via go.mod)
 #   make tidy          # go mod tidy
 #   make clean         # remove bin/
@@ -32,6 +32,8 @@ OLLAMA_LIB_DIR ?= /usr/lib/ollama
 
 LLAMA_SRC := https://raw.githubusercontent.com/ggml-org/llama.cpp/$(LLAMA_CPP_VERSION)
 
+JINJA_DIR := $(LLAMA_DIR)/jinja
+
 LLAMA_HEADERS := \
 	$(LLAMA_INCLUDE)/llama.h \
 	$(LLAMA_INCLUDE)/llama-cpp.h \
@@ -43,7 +45,7 @@ LLAMA_HEADERS := \
 	$(LLAMA_GGML)/ggml-opt.h \
 	$(LLAMA_GGML)/gguf.h
 
-.PHONY: all build fetch-deps fetch-headers fetch-libs docker-build tidy clean clean-deps
+.PHONY: all build fetch-deps fetch-headers fetch-jinja fetch-libs build-jinja docker-build tidy clean clean-deps
 
 all: build
 
@@ -71,6 +73,28 @@ fetch-headers: $(LLAMA_HEADERS)
 	@printf '%s' $(LLAMA_CPP_VERSION) > $(LLAMA_CPP_VERSION_FILE)
 	@echo "Headers: llama.cpp $(LLAMA_CPP_VERSION) (via ollama $(OLLAMA_VERSION))"
 
+# Jinja (minja) sources from llama.cpp's common/jinja/ — the same Jinja engine
+# ollama's llama-server uses for chat template rendering.
+fetch-jinja: | $(JINJA_DIR)
+	@for f in utils.h string.h string.cpp lexer.h lexer.cpp value.h value.cpp \
+	          runtime.h runtime.cpp parser.h parser.cpp caps.h caps.cpp; do \
+		curl -fsSL "$(LLAMA_SRC)/common/jinja/$$f" -o "$(JINJA_DIR)/$$f" || exit 1; \
+	done
+	@curl -fsSL "$(LLAMA_SRC)/common/unicode.h" -o "$(JINJA_DIR)/unicode.h"
+	@curl -fsSL "$(LLAMA_SRC)/common/unicode.cpp" -o "$(JINJA_DIR)/unicode.cpp"
+	@cp jinja/wrapper.cpp $(JINJA_DIR)/
+	@echo "Jinja: fetched from llama.cpp $(LLAMA_CPP_VERSION)"
+
+$(JINJA_DIR):
+	@mkdir -p "$@"
+
+# -include cstring avoids the string.h / <string.h> filename collision.
+build-jinja: fetch-jinja
+	@for f in $(JINJA_DIR)/*.cpp; do \
+		g++ -std=c++17 -O2 -c -include cstring -I$(LLAMA_DIR) "$$f" -o "$${f%.cpp}.o"; \
+	done
+	@ar rcs $(LLAMA_LIB)/libotjinja.a $(JINJA_DIR)/*.o
+
 fetch-libs: | $(LLAMA_LIB)
 	@test -f $(OLLAMA_LIB_DIR)/libllama.so || { \
 		echo "ollama libs not found in $(OLLAMA_LIB_DIR)"; \
@@ -80,17 +104,17 @@ fetch-libs: | $(LLAMA_LIB)
 	cp -a $(OLLAMA_LIB_DIR)/libggml-base.so* $(LLAMA_LIB)/
 	@echo "Libs: copied from $(OLLAMA_LIB_DIR)"
 
-fetch-deps: fetch-headers fetch-libs
+fetch-deps: fetch-headers fetch-jinja fetch-libs
 
 tidy:
 	$(GO) mod tidy $(GOFLAGS)
 
-build: fetch-deps
+build: fetch-deps build-jinja
 	@mkdir -p $(BUILD_DIR)
 	CGO_ENABLED=1 $(GO) build -trimpath $(GOFLAGS) -o $(BUILD_DIR)/ollamatokenizer ./cmd/ollamatokenizer
 
 # Single-sourced Docker build: OLLAMA_VERSION comes from go.mod and is passed as
-# a build-arg (the Dockerfile has no default — Docker can't read go.mod to resolve
+# a build-arg (the Dockerfile has no default - Docker can't read go.mod to resolve
 # the FROM tag at parse time). CI does the same derivation.
 docker-build:
 	docker build --build-arg OLLAMA_VERSION=$(OLLAMA_VERSION) -t $(DOCKER_IMAGE) .

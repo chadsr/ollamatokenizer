@@ -22,16 +22,15 @@ import (
 
 const errPfx = "ollamatokenizer: "
 
-// ErrNotImplemented is returned for unsupported request options.
 var ErrNotImplemented = fmt.Errorf("not implemented")
 
-// Tokenizer encodes text for a model using llama.cpp's real tokenizer, loaded vocab-only.
+// Tokenizer holds a vocab-only GGUF handle and ollama model metadata.
 type Tokenizer struct {
 	tok   *cgoVocab
 	model *server.Model
 }
 
-// New returns a Tokenizer for a pulled model; only the GGUF vocab is read.
+// New loads a model's vocab-only GGUF via cgo and ollama metadata via server.GetModel.
 // https://github.com/ollama/ollama/blob/v0.31.2/server/images.go#L641
 func New(name string) (*Tokenizer, error) {
 	m, err := server.GetModel(name)
@@ -45,15 +44,14 @@ func New(name string) (*Tokenizer, error) {
 	return &Tokenizer{tok: tok, model: m}, nil
 }
 
-// Close releases the vocab handle.
 func (t *Tokenizer) Close() {
 	if t != nil && t.tok != nil {
 		t.tok.Close()
 	}
 }
 
-// Tokenize encodes raw text. addSpecial applies BOS/EOS per the vocab; parseSpecial
-// parses special-token strings (e.g. <|im_start|>) into their IDs.
+// Tokenize encodes text via llama_tokenize. addSpecial applies BOS/EOS per the
+// vocab; parseSpecial parses special-token strings (e.g. <|im_start|>).
 func (t *Tokenizer) Tokenize(text string, addSpecial, parseSpecial bool) ([]int32, error) {
 	tokens, err := t.tok.Encode(text, addSpecial, parseSpecial)
 	if err != nil {
@@ -62,14 +60,14 @@ func (t *Tokenizer) Tokenize(text string, addSpecial, parseSpecial bool) ([]int3
 	return tokens, nil
 }
 
-// hasThinking mirrors server.routes thinking detection.
-// https://github.com/ollama/ollama/blob/v0.31.2/server/routes.go#L2621-L2635
+// hasThinking checks CapabilityThinking.
+// https://github.com/ollama/ollama/blob/v0.31.2/server/routes.go#L463-L468
 func (t *Tokenizer) hasThinking() bool {
 	return slices.Contains(t.model.Capabilities(), modelname.CapabilityThinking)
 }
 
 // resolveThink defaults think to true for thinking-capable models when unset.
-// https://github.com/ollama/ollama/blob/v0.31.2/server/routes.go#L2621-L2635
+// https://github.com/ollama/ollama/blob/v0.31.2/server/routes.go#L463-L468
 func (t *Tokenizer) resolveThink(think *api.ThinkValue) *api.ThinkValue {
 	if think != nil {
 		return think
@@ -80,7 +78,8 @@ func (t *Tokenizer) resolveThink(think *api.ThinkValue) *api.ThinkValue {
 	return nil
 }
 
-// renderPrompt mirrors server.renderPrompt, plus an in-process native-Jinja path.
+// renderPrompt mirrors server.renderPrompt, with an added nativeJinja branch
+// (upstream dispatches native Jinja at the handler level via r.ApplyChatTemplate).
 // https://github.com/ollama/ollama/blob/v0.31.2/server/prompt.go#L135-L156
 func (t *Tokenizer) renderPrompt(msgs []api.Message, tools []api.Tool, think *api.ThinkValue) (string, error) {
 	if t.model.Config.Renderer != "" {
@@ -106,21 +105,17 @@ func (t *Tokenizer) renderPrompt(msgs []api.Message, tools []api.Tool, think *ap
 		thinkVal = think.Bool()
 		thinkLevel = think.String()
 	}
-	if err := t.model.Template.Execute(&b, template.Values{
-		Messages:   msgs,
-		Tools:      tools,
-		Think:      thinkVal,
-		ThinkLevel: thinkLevel,
-		IsThinkSet: think != nil,
-	}); err != nil {
+	if err := t.model.Template.Execute(&b, template.Values{Messages: msgs, Tools: tools, Think: thinkVal, ThinkLevel: thinkLevel, IsThinkSet: think != nil}); err != nil {
 		return "", fmt.Errorf(errPfx+"template: %w", err)
 	}
 	return b.String(), nil
 }
 
-// nativeJinja mirrors chatModeForModel(m) == native for the no-Renderer/Parser case;
-// PreferChatTemplate is set by ollama when the GGUF chat_template beats the Go TEMPLATE.
-// https://github.com/ollama/ollama/blob/v0.31.2/server/routes.go#L2362-L2380
+// nativeJinja mirrors chatModeForModel(m)==native, collapsed from
+// chatModeForModel + usesOllamaRenderedChat + shouldUseGoTemplate.
+// Drops IsMLX (safetensors fails at vocab load) and envconfig.GoTemplate
+// (server runtime knob; default behavior matches exactly).
+// https://github.com/ollama/ollama/blob/v0.31.2/server/routes.go#L2362-L2390
 func nativeJinja(m *server.Model) bool {
 	if m == nil || !m.HasChatTemplate {
 		return false
@@ -131,126 +126,36 @@ func nativeJinja(m *server.Model) bool {
 	return m.PreferChatTemplate || !m.HasGoTemplate
 }
 
-// renderNativeJinja approximates llama-server's Jinja (minja) — which lives only
-// in the llama-server binary — using llama.cpp's builtin template engine plus
-// two behaviors the builtin drops: the literal prefix baked before the message
-// loop (e.g. phi4's embedded system), and merging system into the first user
-// message when the loop has no system branch.
+// renderNativeJinja renders via the GGUF Jinja chat_template using minja.
+// Ollama dispatches this path through r.ApplyChatTemplate (llama-server subprocess);
+// we call the same engine in-process via cgo (wrapper.cpp → libotjinja.a).
+// https://github.com/ollama/ollama/blob/v0.31.2/server/routes.go#L568-L593
+// https://github.com/ollama/ollama/blob/v0.31.2/server/routes.go#L2679
 func (t *Tokenizer) renderNativeJinja(msgs []api.Message) (string, error) {
-	tmpl := t.tok.ChatTemplate()
-	loop := loopBody(tmpl)
-	chatMsgs := msgs
-	if loop != "" && !systemBranchInLoop(loop) {
-		chatMsgs = mergeSystemIntoUser(chatMsgs)
-	}
-	cm := make([]ChatMessage, 0, len(chatMsgs))
-	for _, m := range chatMsgs {
+	cm := make([]ChatMessage, 0, len(msgs))
+	for _, m := range msgs {
 		cm = append(cm, ChatMessage{Role: m.Role, Content: m.Content})
 	}
-	rendered, err := t.tok.RenderChat(cm, true)
+	rendered, err := t.tok.RenderChatJinja(cm, t.tok.BOSPiece(), "", true)
 	if err != nil {
 		return "", fmt.Errorf(errPfx+"native chat template for %q: %w", t.model.Name, err)
-	}
-	if baked := bakedLiteralPrefix(tmpl); baked != "" {
-		rendered = baked + rendered
-	}
-	// Restore a {{ bos_token }} the builtin drops (deepseek-r1 etc.). Only when
-	// the tokenizer itself won't add BOS, else it would be double-counted.
-	if !t.tok.AddBOS() && templateEmitsBosToken(tmpl) {
-		rendered = t.tok.BOSPiece() + rendered
 	}
 	return rendered, nil
 }
 
-// templateEmitsBosToken reports whether {{ bos_token }} is emitted outside the
-// render loop (minja substitutes it; the builtin renderer drops it). The render
-// loop is the LAST {% for %}; some templates have an earlier extraction loop.
-func templateEmitsBosToken(tmpl string) bool {
-	i := strings.LastIndex(tmpl, "{% for")
-	if j := strings.LastIndex(tmpl, "{%- for"); j > i {
-		i = j
-	}
-	head := tmpl
-	if i >= 0 {
-		head = tmpl[:i]
-	}
-	return strings.Contains(head, "{{ bos_token }}") || strings.Contains(head, "{{bos_token}}")
-}
-
-// bakedLiteralPrefix returns literal text the template emits before {% for },
-// or "" if that region holds Jinja logic rather than verbatim text.
-func bakedLiteralPrefix(tmpl string) string {
-	i := strings.Index(tmpl, "{% for")
-	if i < 0 {
-		i = strings.Index(tmpl, "{%- for")
-	}
-	if i <= 0 {
-		return ""
-	}
-	head := tmpl[:i]
-	if strings.Contains(head, "{%") || strings.Contains(head, "{{") {
-		return ""
-	}
-	return head
-}
-
-// loopBody returns the {% for %}...{% endfor %} substring, or "" if absent.
-func loopBody(tmpl string) string {
-	i := strings.Index(tmpl, "{% for")
-	if i < 0 {
-		i = strings.Index(tmpl, "{%- for")
-	}
-	if i < 0 {
-		return ""
-	}
-	if j := strings.Index(tmpl[i:], "{% endfor"); j >= 0 {
-		return tmpl[i : i+j]
-	}
-	return ""
-}
-
-// systemBranchInLoop reports whether the loop handles role == "system".
-func systemBranchInLoop(loop string) bool { return strings.Contains(loop, "system") }
-
-// mergeSystemIntoUser prepends all system contents to the first user message,
-// matching llama.cpp's handling of templates whose loop ignores system.
-func mergeSystemIntoUser(msgs []api.Message) []api.Message {
-	var sys []string
-	rest := msgs[:0:0]
-	for _, m := range msgs {
-		if m.Role == "system" {
-			sys = append(sys, m.Content)
-		} else {
-			rest = append(rest, m)
-		}
-	}
-	if len(sys) == 0 {
-		return msgs
-	}
-	merged := strings.Join(sys, "\n")
-	for i, m := range rest {
-		if m.Role == "user" {
-			rest[i].Content = merged + "\n" + m.Content
-			return rest
-		}
-	}
-	return append([]api.Message{{Role: "user", Content: merged}}, rest...)
-}
-
-// completionPrompt mirrors llamaServerRunner.completionPrompt: strip the textual
-// BOS the renderer emitted when llama.cpp will also add BOS, else it's counted twice.
+// completionPrompt strips the textual BOS the renderer emitted when llama.cpp
+// will also add BOS at tokenize(add_special=true), else it's counted twice.
+// Uses BOSPiece() instead of ollama's "<bos>" literal — minja substitutes the
+// real BOS token text, not the "<bos>" placeholder.
 // https://github.com/ollama/ollama/blob/v0.31.2/llm/llama_server.go#L240-L252
 func (t *Tokenizer) completionPrompt(prompt string) string {
-	if !t.tok.AddBOS() {
-		return prompt
-	}
-	if t.model.Config.Renderer != "" {
+	if t.tok.AddBOS() {
 		if lb := renderers.LeadingBOSForRenderer(resolveRendererName(t.model)); lb != "" && strings.HasPrefix(prompt, lb) {
 			return strings.TrimPrefix(prompt, lb)
 		}
-	}
-	if strings.HasPrefix(prompt, "<bos>") {
-		return strings.TrimPrefix(prompt, "<bos>")
+		if bosPiece := t.tok.BOSPiece(); bosPiece != "" && strings.HasPrefix(prompt, bosPiece) {
+			return strings.TrimPrefix(prompt, bosPiece)
+		}
 	}
 	return prompt
 }
@@ -279,7 +184,7 @@ func filterThinkTags(msgs []api.Message, m *server.Model) []api.Message {
 	return msgs
 }
 
-// shouldUseHarmony mirrors server.shouldUseHarmony (gpt-oss).
+// shouldUseHarmony mirrors server.shouldUseHarmony.
 // https://github.com/ollama/ollama/blob/v0.31.2/server/routes.go#L78-L88
 func shouldUseHarmony(m *server.Model) bool {
 	if slices.Contains([]string{"gptoss", "gpt-oss"}, m.Config.ModelFamily) {
@@ -291,10 +196,9 @@ func shouldUseHarmony(m *server.Model) bool {
 }
 
 // processTools mirrors the chat handler's harmony + builtin-parser setup.
-// https://github.com/ollama/ollama/blob/v0.31.2/server/routes.go#L2667-L2700
+// https://github.com/ollama/ollama/blob/v0.31.2/server/routes.go#L2667-L2698
 func processTools(m *server.Model, tools []api.Tool, msgs []api.Message, think *api.ThinkValue) []api.Tool {
 	if shouldUseHarmony(m) {
-		// harmony only understands low/medium/high; map "max" -> "high".
 		if think != nil {
 			if s, ok := think.Value.(string); ok && s == "max" {
 				think.Value = "high"
@@ -320,7 +224,7 @@ func processTools(m *server.Model, tools []api.Tool, msgs []api.Message, think *
 
 // TokenizeGenerate mirrors /api/generate's prompt assembly (no context truncation).
 // Unsupported (ErrNotImplemented): Suffix, Template, Raw, Context, Images.
-// https://github.com/ollama/ollama/blob/v0.31.2/server/routes.go#L568-L620
+// https://github.com/ollama/ollama/blob/v0.31.2/server/routes.go#L510-L620
 func (t *Tokenizer) TokenizeGenerate(req api.GenerateRequest) ([]int32, error) {
 	if req.Suffix != "" {
 		return nil, fmt.Errorf(errPfx+"suffix (insert mode) is not implemented: %w", ErrNotImplemented)
@@ -355,7 +259,7 @@ func (t *Tokenizer) TokenizeGenerate(req api.GenerateRequest) ([]int32, error) {
 }
 
 // TokenizeChat mirrors /api/chat's prompt assembly (no context truncation).
-// https://github.com/ollama/ollama/blob/v0.31.2/server/routes.go#L2667-L2705
+// https://github.com/ollama/ollama/blob/v0.31.2/server/routes.go#L2661-L2705
 func (t *Tokenizer) TokenizeChat(req api.ChatRequest) ([]int32, error) {
 	msgs := append(t.model.Messages, req.Messages...)
 	if len(req.Messages) > 0 && req.Messages[0].Role != "system" && t.model.System != "" {
@@ -373,23 +277,32 @@ func (t *Tokenizer) TokenizeChat(req api.ChatRequest) ([]int32, error) {
 	return t.Tokenize(t.completionPrompt(rendered), true, true)
 }
 
-// gemma4 renderer resolution — verbatim mirror of server/renderer_resolution.go.
-// https://github.com/ollama/ollama/blob/v0.31.2/server/renderer_resolution.go
+// Gemma4 renderer resolution — verbatim mirror of server/renderer_resolution.go.
+// https://github.com/ollama/ollama/blob/v0.31.2/server/renderer_resolution.go#L1-L101
+
+const (
+	gemma4RendererLegacy         = "gemma4"
+	gemma4RendererSmall          = "gemma4-small"
+	gemma4RendererLarge          = "gemma4-large"
+	gemma4LargeMinParameterCount = 12_000_000_000
+)
 
 func resolveRendererName(m *server.Model) string {
 	if m == nil || m.Config.Renderer == "" {
 		return ""
 	}
-	if m.Config.Renderer == "gemma4" {
+	switch m.Config.Renderer {
+	case gemma4RendererLegacy:
 		return resolveGemma4Renderer(m)
+	default:
+		return m.Config.Renderer
 	}
-	return m.Config.Renderer
 }
 
 func resolveGemma4Renderer(m *server.Model) string {
-	if m == nil || m.Config.Renderer != "gemma4" {
+	if m == nil || m.Config.Renderer != gemma4RendererLegacy {
 		if m == nil {
-			return "gemma4"
+			return gemma4RendererLegacy
 		}
 		return m.Config.Renderer
 	}
@@ -402,25 +315,23 @@ func resolveGemma4Renderer(m *server.Model) string {
 	if parameterCount, ok := parseHumanParameterCount(m.Config.ModelType); ok {
 		return gemma4RendererForParameterCount(parameterCount)
 	}
-	return "gemma4-small"
+	return gemma4RendererSmall
 }
-
-const gemma4LargeMinParameterCount = 12_000_000_000
 
 func gemma4RendererForParameterCount(parameterCount uint64) string {
 	if parameterCount >= gemma4LargeMinParameterCount {
-		return "gemma4-large"
+		return gemma4RendererLarge
 	}
-	return "gemma4-small"
+	return gemma4RendererSmall
 }
 
 func gemma4RendererFromName(name string) (string, bool) {
 	lower := strings.ToLower(name)
 	switch {
 	case strings.Contains(lower, "e2b"), strings.Contains(lower, "e4b"):
-		return "gemma4-small", true
+		return gemma4RendererSmall, true
 	case strings.Contains(lower, "12b"), strings.Contains(lower, "26b"), strings.Contains(lower, "31b"):
-		return "gemma4-large", true
+		return gemma4RendererLarge, true
 	default:
 		return "", false
 	}

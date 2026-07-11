@@ -9,12 +9,17 @@
 package ollamatokenizer
 
 /*
-#cgo CFLAGS: -I${SRCDIR}/llama-cpp/include -I${SRCDIR}/llama-cpp/ggml/include
-#cgo LDFLAGS: -L${SRCDIR}/llama-cpp/lib -lllama -lggml -lggml-base -lstdc++ -lm
+#cgo CFLAGS: -I${SRCDIR}/llama-cpp/include -I${SRCDIR}/llama-cpp/ggml/include -I${SRCDIR}/llama-cpp
+#cgo LDFLAGS: -L${SRCDIR}/llama-cpp/lib -lllama -lggml -lggml-base -lotjinja -lstdc++ -lm
 #cgo LDFLAGS: -Wl,-rpath,'${SRCDIR}/llama-cpp/lib'
 
 #include <stdlib.h>
 #include "llama.h"
+
+struct ot_jinja_message { const char *role; const char *content; };
+extern int ot_jinja_render(const char *tmpl, const struct ot_jinja_message *msgs, int n_msgs,
+    const char *bos_token, const char *eos_token, int add_generation_prompt,
+    char *buf, int buf_len);
 
 // Wrappers keep llama_model_params layout on the C side; Go uses opaque pointers.
 
@@ -54,16 +59,7 @@ static const char* ot_llama_chat_template(void* model) {
 	return llama_model_chat_template((const struct llama_model*) model, NULL);
 }
 
-// apply_chat_template: llama.cpp's builtin renderer (no minja). Returns bytes
-// written; negative/overflow => retry with larger buf.
-static int ot_llama_apply_chat_template(const char* tmpl,
-                                        const struct llama_chat_message* msgs, size_t n_msg,
-                                        int add_ass, char* buf, int n_max) {
-	return (int) llama_chat_apply_template(tmpl, msgs, n_msg, (bool)add_ass, buf, (int32_t)n_max);
-}
-
-// add_bos: whether llama.cpp prepends BOS at tokenize(add_special=true); forced
-// on at load for some models (e.g. Gemma4) regardless of the GGUF flag.
+// add_bos: whether llama.cpp prepends BOS at tokenize(add_special=true).
 static int ot_llama_add_bos(const void* vocab) {
 	return (int) llama_vocab_get_add_bos((const struct llama_vocab*) vocab);
 }
@@ -127,57 +123,10 @@ func (c *cgoVocab) ChatTemplate() string {
 	return C.GoString(tmpl)
 }
 
-// ChatMessage is a {role, content} pair for RenderChat.
+// ChatMessage is a {role, content} pair for RenderChatJinja.
 type ChatMessage struct {
 	Role    string
 	Content string
-}
-
-// RenderChat applies the model's builtin chat template; addGenerationPrompt
-// appends the assistant-turn marker.
-func (c *cgoVocab) RenderChat(msgs []ChatMessage, addGenerationPrompt bool) (string, error) {
-	tmpl := C.ot_llama_chat_template(c.model)
-	if tmpl == nil {
-		return "", fmt.Errorf("model has no chat template")
-	}
-	if len(msgs) == 0 {
-		return "", nil
-	}
-	cMsgs := make([]C.struct_llama_chat_message, len(msgs))
-	for i, m := range msgs {
-		cMsgs[i] = C.struct_llama_chat_message{
-			role:    C.CString(m.Role),
-			content: C.CString(m.Content),
-		}
-	}
-	defer func() {
-		for i := range cMsgs {
-			C.free(unsafe.Pointer(cMsgs[i].role))
-			C.free(unsafe.Pointer(cMsgs[i].content))
-		}
-	}()
-
-	addAss := C.int(0)
-	if addGenerationPrompt {
-		addAss = 1
-	}
-	nInt := 1 << 16
-	buf := make([]byte, nInt)
-	for {
-		got := int(C.ot_llama_apply_chat_template(
-			tmpl,
-			&cMsgs[0],
-			C.size_t(len(cMsgs)),
-			addAss,
-			(*C.char)(unsafe.Pointer(&buf[0])),
-			C.int(nInt),
-		))
-		if got >= 0 && got <= nInt {
-			return string(buf[:got]), nil
-		}
-		nInt = got + 1 // overflow: retry with required size
-		buf = make([]byte, nInt)
-	}
 }
 
 // Encode tokenizes text. addSpecial applies BOS/EOS per the vocab.
@@ -243,3 +192,59 @@ func cbool(b bool) C.int {
 }
 
 var empty [1]byte // sentinel pointer for empty input
+
+// RenderChatJinja renders messages through the model's Jinja chat template using
+// llama.cpp's minja engine - the same engine ollama uses.
+func (c *cgoVocab) RenderChatJinja(msgs []ChatMessage, bosToken, eosToken string, addGenerationPrompt bool) (string, error) {
+	tmpl := C.ot_llama_chat_template(c.model)
+	if tmpl == nil {
+		return "", fmt.Errorf("model has no chat template")
+	}
+
+	cMsgs := make([]C.struct_ot_jinja_message, len(msgs))
+	for i, m := range msgs {
+		cMsgs[i] = C.struct_ot_jinja_message{
+			role:    C.CString(m.Role),
+			content: C.CString(m.Content),
+		}
+	}
+	defer func() {
+		for i := range cMsgs {
+			C.free(unsafe.Pointer(cMsgs[i].role))
+			C.free(unsafe.Pointer(cMsgs[i].content))
+		}
+	}()
+
+	var bosC, eosC *C.char
+	if bosToken != "" {
+		bosC = C.CString(bosToken)
+		defer C.free(unsafe.Pointer(bosC))
+	}
+	if eosToken != "" {
+		eosC = C.CString(eosToken)
+		defer C.free(unsafe.Pointer(eosC))
+	}
+
+	n := 1 << 16
+	buf := make([]byte, n)
+	for {
+		got := int(C.ot_jinja_render(
+			tmpl,
+			&cMsgs[0],
+			C.int(len(cMsgs)),
+			bosC,
+			eosC,
+			cbool(addGenerationPrompt),
+			(*C.char)(unsafe.Pointer(&buf[0])),
+			C.int(n),
+		))
+		if got >= 0 {
+			return string(buf[:got]), nil
+		}
+		if got == -1 {
+			return "", fmt.Errorf("jinja template render failed")
+		}
+		n = -got
+		buf = make([]byte, n)
+	}
+}

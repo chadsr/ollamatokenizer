@@ -57,11 +57,14 @@ jobs:
           go-version-file: 'go.mod'
           cache-dependency-path: go.sum
 
+      - name: Install build dependencies
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends nlohmann-json3-dev
+
       - name: Cache llama.cpp deps
         uses: actions/cache@v6
         with:
           path: llama-cpp
-          key: llama-cpp-${{ hashFiles('go.mod') }}
+          key: llama-cpp-${{ hashFiles('go.mod', 'jinja/wrapper.cpp') }}
 
       # The runner has no ollama install, so source libllama.so from the ollama
       # image pinned to go.mod (tag has no leading "v").
@@ -121,11 +124,14 @@ jobs:
           go-version-file: 'go.mod'
           cache-dependency-path: go.sum
 
+      - name: Install build dependencies
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends nlohmann-json3-dev
+
       - name: Cache llama.cpp deps
         uses: actions/cache@v6
         with:
           path: llama-cpp
-          key: llama-cpp-${{ hashFiles('go.mod') }}
+          key: llama-cpp-${{ hashFiles('go.mod', 'jinja/wrapper.cpp') }}
 
       - name: Derive ollama image tag from go.mod
         id: ver
