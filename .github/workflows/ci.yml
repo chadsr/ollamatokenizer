@@ -63,8 +63,7 @@ jobs:
           path: llama-cpp
           key: llama-cpp-${{ hashFiles('go.mod', 'jinja/shim.cpp') }}
 
-      # The runner has no ollama install, so source libllama.so from the ollama
-      # image pinned to go.mod (tag has no leading "v").
+      # source the llama.cpp libs pinned to go.mod
       - name: Derive ollama image tag from go.mod
         id: ver
         run: echo "tag=$(awk '/github\.com\/ollama\/ollama/ {print $2}' go.mod | sed 's/^v//')" >> "$GITHUB_OUTPUT"
