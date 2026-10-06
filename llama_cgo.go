@@ -1,34 +1,28 @@
 //go:build cgo
 
-// Package ollamatokenizer links ollama's bundled libllama.so and uses llama.cpp's
-// real tokenizer with vocab-only model loading. The llama.cpp version must match
-// the ollama build (ABI: llama_model_params); pin via go.mod → LLAMA_CPP_VERSION.
-// Build inputs (populated by `make fetch-deps`) live under llama-cpp/:
-//   - include/llama.h, ggml/include/*.h  (headers)
-//   - lib/lib{llama,ggml,ggml-base}.so   (from the ollama install)
+// Package ollamatokenizer: cgo bindings for llama.cpp tokenization.
 package ollamatokenizer
 
 /*
 #cgo CFLAGS: -I${SRCDIR}/llama-cpp/include -I${SRCDIR}/llama-cpp/ggml/include -I${SRCDIR}/llama-cpp
-#cgo LDFLAGS: -L${SRCDIR}/llama-cpp/lib -lllama -lggml -lggml-base -lotjinja -lstdc++ -lm
+#cgo LDFLAGS: -L${SRCDIR}/llama-cpp/lib -lotchat -lllama -lllama-common -lggml -lggml-base -lstdc++ -lm
 #cgo LDFLAGS: -Wl,-rpath,'${SRCDIR}/llama-cpp/lib'
 
 #include <stdlib.h>
 #include "llama.h"
 
-struct ot_jinja_message { const char *role; const char *content; };
-extern int ot_jinja_render(const char *tmpl, const struct ot_jinja_message *msgs, int n_msgs,
-    const char *bos_token, const char *eos_token, int add_generation_prompt,
-    char *buf, int buf_len);
+// ot_chat_apply: jinja/shim.cpp → libotchat.a → libllama-common.so.
+extern int ot_chat_apply(const void* model, const char* messages_json, const char* tools_json,
+    int think_set, int enable_thinking, const char* reasoning_effort,
+    char* buf, int buf_len);
 
 // Wrappers keep llama_model_params layout on the C side; Go uses opaque pointers.
 
-// load_vocab: load only the GGUF vocab (no weights/tensors/GPU).
+// load_vocab: vocab-only load, no weights/tensors/GPU.
 static void* ot_llama_load_vocab(const char* path) {
 	struct llama_model_params p = llama_model_default_params();
 	p.vocab_only = true;
 	p.n_gpu_layers = 0;
-	p.use_mmap = false;
 	return (void*) llama_model_load_from_file(path, p);
 }
 static const void* ot_llama_vocab(void* model) {
@@ -54,30 +48,24 @@ static void ot_llama_silence(void) {
 	llama_log_set(ot_llama_silence_cb, NULL);
 }
 
-// chat_template: the model's GGUF Jinja chat_template (or NULL).
-static const char* ot_llama_chat_template(void* model) {
-	return llama_model_chat_template((const struct llama_model*) model, NULL);
-}
-
-// add_bos: whether llama.cpp prepends BOS at tokenize(add_special=true).
+// add_bos: whether tokenize(add_special=true) prepends BOS. Matches ollama's
+// tokenizerAddsBOS() — llama.cpp forces add_bos for lfm2/gemma4 at load time.
+// https://github.com/ollama/ollama/blob/v0.35.1/llm/llama_server.go#L260-L280
 static int ot_llama_add_bos(const void* vocab) {
 	return (int) llama_vocab_get_add_bos((const struct llama_vocab*) vocab);
-}
-
-// bos_id / bos_piece: the vocab's BOS token, for restoring a {{ bos_token }}
-// the builtin renderer drops on native-Jinja templates.
-static int ot_llama_bos_id(const void* vocab) {
-	return (int) llama_vocab_bos((const struct llama_vocab*) vocab);
-}
-static int ot_llama_token_piece(const void* vocab, int token, char* buf, int n) {
-	return (int) llama_token_to_piece((const struct llama_vocab*) vocab, (llama_token) token, buf, (int32_t)n, 0, true);
 }
 */
 import "C"
 
 import (
+	"bytes"
+	"encoding/json"
+	"errors"
 	"fmt"
+	"strings"
 	"unsafe"
+
+	"github.com/ollama/ollama/api"
 )
 
 func init() {
@@ -114,22 +102,7 @@ func (c *cgoVocab) Close() {
 	}
 }
 
-// ChatTemplate returns the model's GGUF Jinja chat template, or "".
-func (c *cgoVocab) ChatTemplate() string {
-	tmpl := C.ot_llama_chat_template(c.model)
-	if tmpl == nil {
-		return ""
-	}
-	return C.GoString(tmpl)
-}
-
-// ChatMessage is a {role, content} pair for RenderChatJinja.
-type ChatMessage struct {
-	Role    string
-	Content string
-}
-
-// Encode tokenizes text. addSpecial applies BOS/EOS per the vocab.
+// Encode tokenizes text.
 func (c *cgoVocab) Encode(text string, addSpecial, parseSpecial bool) ([]int32, error) {
 	var cText *C.char
 	if len(text) > 0 {
@@ -166,24 +139,6 @@ func (c *cgoVocab) Encode(text string, addSpecial, parseSpecial bool) ([]int32, 
 // AddBOS reports whether llama.cpp prepends BOS at tokenize(add_special=true).
 func (c *cgoVocab) AddBOS() bool { return C.ot_llama_add_bos(c.vocab) != 0 }
 
-// BOSPiece returns the textual piece for the vocab's BOS token.
-func (c *cgoVocab) BOSPiece() string {
-	id := C.ot_llama_bos_id(c.vocab)
-	if id < 0 {
-		return ""
-	}
-	buf := make([]byte, 64)
-	n := int(C.ot_llama_token_piece(c.vocab, id, (*C.char)(unsafe.Pointer(&buf[0])), C.int(len(buf))))
-	if n <= 0 {
-		return ""
-	}
-	if n > len(buf) {
-		buf = make([]byte, n)
-		n = int(C.ot_llama_token_piece(c.vocab, id, (*C.char)(unsafe.Pointer(&buf[0])), C.int(len(buf))))
-	}
-	return string(buf[:n])
-}
-
 func cbool(b bool) C.int {
 	if b {
 		return 1
@@ -193,58 +148,139 @@ func cbool(b bool) C.int {
 
 var empty [1]byte // sentinel pointer for empty input
 
-// RenderChatJinja renders messages through the model's Jinja chat template using
-// llama.cpp's minja engine - the same engine ollama uses.
-func (c *cgoVocab) RenderChatJinja(msgs []ChatMessage, bosToken, eosToken string, addGenerationPrompt bool) (string, error) {
-	tmpl := C.ot_llama_chat_template(c.model)
-	if tmpl == nil {
-		return "", fmt.Errorf("model has no chat template")
-	}
+// serverMessage is the message JSON ollama posts to llama-server.
+// https://github.com/ollama/ollama/blob/v0.35.1/llm/llama_server.go#L2312-L2360
+type serverMessage struct {
+	Role       string           `json:"role"`
+	Content    string           `json:"content"`
+	ToolCallID string           `json:"tool_call_id,omitempty"`
+	Name       string           `json:"name,omitempty"`
+	ToolCalls  []serverToolCall `json:"tool_calls,omitempty"`
+}
 
-	cMsgs := make([]C.struct_ot_jinja_message, len(msgs))
+// serverToolCall mirrors llamaServerChatToolCall.
+// https://github.com/ollama/ollama/blob/v0.35.1/llm/llama_server.go#L2197-L2205
+type serverToolCall struct {
+	ID       string `json:"id,omitempty"`
+	Index    int    `json:"index"`
+	Type     string `json:"type"`
+	Function struct {
+		Name      string `json:"name"`
+		Arguments string `json:"arguments"`
+	} `json:"function"`
+}
+
+// serverMessages marshals messages like llamaServerChatMessage (stringified
+// tool-call arguments).
+// https://github.com/ollama/ollama/blob/v0.35.1/llm/llama_server.go#L2304-L2330
+func serverMessages(msgs []api.Message) ([]serverMessage, error) {
+	out := make([]serverMessage, len(msgs))
 	for i, m := range msgs {
-		cMsgs[i] = C.struct_ot_jinja_message{
-			role:    C.CString(m.Role),
-			content: C.CString(m.Content),
+		sm := serverMessage{
+			Role:       m.Role,
+			Content:    m.Content,
+			ToolCallID: m.ToolCallID,
+			Name:       m.ToolName,
 		}
+		for _, tc := range m.ToolCalls {
+			args, err := json.Marshal(tc.Function.Arguments)
+			if err != nil {
+				return nil, fmt.Errorf("marshal tool call arguments for %q: %w", tc.Function.Name, err)
+			}
+			var stc serverToolCall
+			stc.ID = tc.ID
+			stc.Index = tc.Function.Index
+			stc.Type = "function"
+			stc.Function.Name = tc.Function.Name
+			stc.Function.Arguments = string(args)
+			sm.ToolCalls = append(sm.ToolCalls, stc)
+		}
+		out[i] = sm
 	}
-	defer func() {
-		for i := range cMsgs {
-			C.free(unsafe.Pointer(cMsgs[i].role))
-			C.free(unsafe.Pointer(cMsgs[i].content))
-		}
-	}()
+	return out, nil
+}
 
-	var bosC, eosC *C.char
-	if bosToken != "" {
-		bosC = C.CString(bosToken)
-		defer C.free(unsafe.Pointer(bosC))
+// RenderChatJinja applies the GGUF chat template via the shim.
+// https://github.com/ollama/ollama/blob/v0.35.1/llm/llama_server.go#L1945-L1986
+func (c *cgoVocab) RenderChatJinja(msgs []api.Message, tools []api.Tool, think *api.ThinkValue) (string, error) {
+	messages, err := serverMessages(msgs)
+	if err != nil {
+		return "", err
 	}
-	if eosToken != "" {
-		eosC = C.CString(eosToken)
-		defer C.free(unsafe.Pointer(eosC))
+	messagesJSON, err := json.Marshal(messages)
+	if err != nil {
+		return "", fmt.Errorf("marshal messages: %w", err)
+	}
+	cMessages := C.CString(string(messagesJSON))
+	defer C.free(unsafe.Pointer(cMessages))
+
+	// Tools pass through verbatim, like ollama's body["tools"] = req.Tools.
+	var cTools *C.char
+	if len(tools) > 0 {
+		toolsJSON, err := json.Marshal(tools)
+		if err != nil {
+			return "", fmt.Errorf("marshal tools: %w", err)
+		}
+		cTools = C.CString(string(toolsJSON))
+		defer C.free(unsafe.Pointer(cTools))
+	}
+
+	// llamaServerChatTemplateKwargs: kwargs only when think is set.
+	// https://github.com/ollama/ollama/blob/v0.35.1/llm/llama_server.go#L2296-L2310
+	thinkSet, enableThinking := 0, 0
+	var cEffort *C.char
+	if think != nil {
+		thinkSet = 1
+		if think.Bool() {
+			enableThinking = 1
+		}
+		if think.IsString() {
+			cEffort = C.CString(think.String())
+			defer C.free(unsafe.Pointer(cEffort))
+		}
 	}
 
 	n := 1 << 16
 	buf := make([]byte, n)
 	for {
-		got := int(C.ot_jinja_render(
-			tmpl,
-			&cMsgs[0],
-			C.int(len(cMsgs)),
-			bosC,
-			eosC,
-			cbool(addGenerationPrompt),
+		got := int(C.ot_chat_apply(
+			c.model,
+			cMessages,
+			cTools,
+			C.int(thinkSet),
+			C.int(enableThinking),
+			cEffort,
 			(*C.char)(unsafe.Pointer(&buf[0])),
 			C.int(n),
 		))
-		if got >= 0 {
+		switch {
+		case got >= 0:
 			return string(buf[:got]), nil
+		case got == -1, got == -2:
+			// -2 marks invalid-input errors (HTTP 400); message is in buf.
+			msg := strings.TrimSpace(cstring(buf))
+			if msg == "" {
+				msg = "chat template apply failed"
+			}
+			if got == -2 {
+				return "", &BadRequestError{Err: errors.New(msg)}
+			}
+			return "", errors.New(msg)
+		default:
+			need := -got
+			if need <= n {
+				return "", fmt.Errorf("chat apply: requested %d but have %d", need, n)
+			}
+			n = need
+			buf = make([]byte, n)
 		}
-		if got == -1 {
-			return "", fmt.Errorf("jinja template render failed")
-		}
-		n = -got
-		buf = make([]byte, n)
 	}
+}
+
+// cstring reads a NUL-terminated string out of a byte buffer.
+func cstring(buf []byte) string {
+	if i := bytes.IndexByte(buf, 0); i >= 0 {
+		return string(buf[:i])
+	}
+	return string(buf)
 }

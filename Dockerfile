@@ -8,7 +8,7 @@ FROM ollama/ollama:${OLLAMA_VERSION#v} AS ollama-libs
 FROM golang:1.27-trixie AS builder
 ARG OLLAMA_VERSION
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends gcc g++ make curl ca-certificates nlohmann-json3-dev \
+    && apt-get install -y --no-install-recommends gcc g++ make curl ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /src
@@ -16,9 +16,8 @@ COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
 
-# Stage the pinned ollama libs where `make fetch-deps` expects them, then run the
-# same target as local dev.
-COPY --from=ollama-libs /usr/lib/ollama/libllama.so* /usr/lib/ollama/libggml.so* /usr/lib/ollama/libggml-base.so* /ollama-libs/
+# Stage the pinned ollama libs for `make fetch-deps`.
+COPY --from=ollama-libs /usr/lib/ollama/libllama.so* /usr/lib/ollama/libllama-common.so* /usr/lib/ollama/libggml.so* /usr/lib/ollama/libggml-base.so* /ollama-libs/
 RUN make build OLLAMA_LIB_DIR=/ollama-libs \
     && mkdir -p /out && cp bin/ollamatokenizer /out/
 
@@ -30,7 +29,7 @@ RUN apt-get update \
     && useradd -l -u 1000 -g nogroup -d /nonexistent -s /usr/sbin/nologin ollamatokenizer
 
 COPY --from=builder /out/ollamatokenizer /usr/local/bin/ollamatokenizer
-COPY --from=ollama-libs /usr/lib/ollama/libllama.so* /usr/lib/ollama/libggml.so* /usr/lib/ollama/libggml-base.so* /usr/lib/ollama/
+COPY --from=ollama-libs /usr/lib/ollama/libllama.so* /usr/lib/ollama/libllama-common.so* /usr/lib/ollama/libggml.so* /usr/lib/ollama/libggml-base.so* /usr/lib/ollama/
 # /usr/lib/ollama isn't on the default ldconfig path; register it.
 RUN echo "/usr/lib/ollama" > /etc/ld.so.conf.d/ollama.conf && ldconfig
 

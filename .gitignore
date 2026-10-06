@@ -28,7 +28,6 @@ go.work.sum
 .env
 
 bin/
-include/
 # CGO build inputs (llama.cpp headers + ollama libs)
 llama-cpp/
 

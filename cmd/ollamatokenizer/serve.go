@@ -50,9 +50,13 @@ func getTokenizer(model string) (*ollamatokenizer.Tokenizer, error) {
 
 func respondWithTokens(c *gin.Context, tokens []int32, err error) {
 	if err != nil {
-		if errors.Is(err, ollamatokenizer.ErrNotImplemented) {
+		var badReq *ollamatokenizer.BadRequestError
+		switch {
+		case errors.As(err, &badReq):
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		case errors.Is(err, ollamatokenizer.ErrNotImplemented):
 			c.JSON(http.StatusNotImplemented, gin.H{"error": err.Error()})
-		} else {
+		default:
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		}
 		return

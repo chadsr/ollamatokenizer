@@ -66,8 +66,8 @@ Mirrors `/api/chat`. Applies chat template, tools, thinking.
 {"error": "description"}
 ```
 
-| Status | Cause                            |
-|--------|----------------------------------|
-| 400    | Missing or invalid request body, model not found |
-| 501    | Unsupported option (suffix, template override, raw mode, context, images) |
-| 500    | Tokenization error               |
+| Status | Cause                                                                                        |
+|--------|----------------------------------------------------------------------------------------------|
+| 400    | Invalid request body, model not found, invalid think value, thinking on a non-thinking model |
+| 501    | Unsupported option (suffix, template override, raw mode, context, images)                    |
+| 500    | Tokenization error                                                                           |

@@ -3,6 +3,7 @@ package ollamatokenizer
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -67,6 +68,7 @@ func ollamaURL(t *testing.T) string {
 	return url
 }
 
+// String levels exercise thinking-descriptor resolution and legacy validation.
 var thinkModes = []struct {
 	name  string
 	think *api.ThinkValue
@@ -74,6 +76,10 @@ var thinkModes = []struct {
 	{"think_nil", nil},
 	{"think_true", &api.ThinkValue{Value: true}},
 	{"think_false", &api.ThinkValue{Value: false}},
+	{"think_medium", &api.ThinkValue{Value: "medium"}},
+	{"think_high", &api.ThinkValue{Value: "high"}},
+	{"think_low", &api.ThinkValue{Value: "low"}},
+	{"think_max", &api.ThinkValue{Value: "max"}},
 }
 
 // testMessages exercises edge cases: unicode, special chars, think tags, all roles.
@@ -115,9 +121,9 @@ func TestTokenizeGenerateMatchesAPI(t *testing.T) {
 
 	for _, modelName := range models {
 		modelName := modelName
+		// Serial across models: the test server loads one model at a time, and
+		// parallel load/unload races produce wrong API prompt_eval_counts.
 		t.Run(modelName, func(t *testing.T) {
-			t.Parallel()
-
 			tok, err := New(modelName)
 			if err != nil {
 				t.Fatalf("New(%q): %v", modelName, err)
@@ -130,6 +136,11 @@ func TestTokenizeGenerateMatchesAPI(t *testing.T) {
 						Think:  tm.think,
 					})
 					if err != nil {
+						if skipIfBothReject(t, err, func() ([]int, int, error) {
+							return apiGenerate(apiURL, modelName, testPrompt(), tm.think)
+						}) {
+							return
+						}
 						t.Fatalf("TokenizeGenerate: %v", err)
 					}
 
@@ -139,6 +150,14 @@ func TestTokenizeGenerateMatchesAPI(t *testing.T) {
 							t.Skipf("unsupported: %v", err)
 						}
 						t.Fatalf("API /generate: %v", err)
+					}
+
+					// The live server reports transient wrong counts while
+					// models load/unload under OLLAMA_MAX_LOADED_MODELS=1;
+					// retry once before failing.
+					if len(ourTokens) != promptEvalCount {
+						time.Sleep(2 * time.Second)
+						apiTokens, promptEvalCount, _ = apiGenerate(apiURL, modelName, testPrompt(), tm.think)
 					}
 
 					if len(ourTokens) != promptEvalCount {
@@ -184,9 +203,9 @@ func TestTokenizeChatMatchesAPI(t *testing.T) {
 
 	for _, modelName := range models {
 		modelName := modelName
+		// Serial across models: the test server loads one model at a time, and
+		// parallel load/unload races produce wrong API prompt_eval_counts.
 		t.Run(modelName, func(t *testing.T) {
-			t.Parallel()
-
 			tok, err := New(modelName)
 			if err != nil {
 				t.Fatalf("New(%q): %v", modelName, err)
@@ -199,6 +218,12 @@ func TestTokenizeChatMatchesAPI(t *testing.T) {
 						Think:    tm.think,
 					})
 					if err != nil {
+						if skipIfBothReject(t, err, func() ([]int, int, error) {
+							count, err := apiChat(apiURL, modelName, testMessages, tm.think)
+							return nil, count, err
+						}) {
+							return
+						}
 						t.Fatalf("TokenizeChat: %v", err)
 					}
 
@@ -210,12 +235,75 @@ func TestTokenizeChatMatchesAPI(t *testing.T) {
 						t.Fatalf("API /api/chat: %v", err)
 					}
 
+					// Retry once against transient server count races (see above).
+					if len(ourTokens) != apiCount {
+						time.Sleep(2 * time.Second)
+						apiCount, _ = apiChat(apiURL, modelName, testMessages, tm.think)
+					}
+
 					if len(ourTokens) != apiCount {
 						t.Errorf("token count mismatch: ours=%d API=%d",
 							len(ourTokens), apiCount)
 					}
 				})
 			}
+		})
+	}
+}
+
+// TestPrefillParity checks assistant-prefill (trailing assistant message):
+// counts must match live /api/chat, and the invalid shapes both sides reject.
+func TestPrefillParity(t *testing.T) {
+	ensureModelsDir(t)
+	apiURL := ollamaURL(t)
+	models := listModels(t)
+	if len(models) == 0 {
+		t.Skip("no models installed")
+	}
+
+	prefillMsgs := []api.Message{
+		{Role: "user", Content: "q1"},
+		{Role: "assistant", Content: "partial answer"},
+	}
+	doubleAssistant := []api.Message{
+		{Role: "user", Content: "q1"},
+		{Role: "assistant", Content: "a1"},
+		{Role: "assistant", Content: "a2"},
+	}
+
+	for _, modelName := range models {
+		modelName := modelName
+		// Serial across models: the test server loads one model at a time, and
+		// parallel load/unload races produce wrong API prompt_eval_counts.
+		t.Run(modelName, func(t *testing.T) {
+			tok, err := New(modelName)
+			if err != nil {
+				t.Fatalf("New(%q): %v", modelName, err)
+			}
+
+			t.Run("prefill", func(t *testing.T) {
+				ourTokens, err := tok.TokenizeChat(api.ChatRequest{Messages: prefillMsgs})
+				if err != nil {
+					t.Fatalf("TokenizeChat: %v", err)
+				}
+				apiCount, err := apiChat(apiURL, modelName, prefillMsgs, nil)
+				if err != nil {
+					t.Skipf("API rejected prefill: %v", err)
+				}
+				if len(ourTokens) != apiCount {
+					t.Errorf("prefill count mismatch: ours=%d API=%d", len(ourTokens), apiCount)
+				}
+			})
+
+			t.Run("double_assistant", func(t *testing.T) {
+				_, err := tok.TokenizeChat(api.ChatRequest{Messages: doubleAssistant})
+				if err == nil {
+					t.Skip("model renders trailing assistants without continuation")
+				}
+				if _, apiErr := apiChat(apiURL, modelName, doubleAssistant, nil); apiErr == nil {
+					t.Errorf("we reject but the API accepts: %v", err)
+				}
+			})
 		})
 	}
 }
@@ -237,6 +325,21 @@ func isUnsupportedError(err error) bool {
 				strings.Contains(apiErr.body, "does not support chat"))
 	}
 	return false
+}
+
+// skipIfBothReject skips when both we and the live API reject (err must be a
+// BadRequestError); it fatals if the API accepts what we rejected.
+func skipIfBothReject(t *testing.T, err error, callAPI func() ([]int, int, error)) bool {
+	t.Helper()
+	var badReq *BadRequestError
+	if !errors.As(err, &badReq) {
+		return false
+	}
+	if _, _, apiErr := callAPI(); apiErr != nil {
+		t.Skipf("both reject: ours=%v api=%v", err, apiErr)
+	}
+	t.Fatalf("we reject but the API does not: %v", err)
+	return true
 }
 
 func doAPIRequest(url string, body map[string]any) (*http.Response, error) {
@@ -264,7 +367,8 @@ func apiRequestBase(model string, think *api.ThinkValue) map[string]any {
 		"options":    map[string]any{"num_predict": 0},
 	}
 	if think != nil {
-		req["think"] = think.Bool()
+		// Send the raw value (bool or string level), like a real client would.
+		req["think"] = think.Value
 	}
 	return req
 }
