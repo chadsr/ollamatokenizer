@@ -16,7 +16,7 @@ extern "C" int ot_chat_apply(const void * model_v, const char * messages_json, c
     try {
         common_chat_templates_inputs inputs;
 
-        // https://github.com/ggml-org/llama.cpp/blob/b11232/tools/server/server-common.cpp#L1276-L1292
+        // https://github.com/ggml-org/llama.cpp/blob/b11351/tools/server/server-common.cpp#L1314-L1316
         try {
             inputs.messages = common_chat_msgs_parse_oaicompat(common_json::parse(messages_json));
             if (tools_json != nullptr && tools_json[0] != '\0') {
@@ -28,11 +28,11 @@ extern "C" int ot_chat_apply(const void * model_v, const char * messages_json, c
         }
 
         // ollama omits add_generation_prompt; the server default is true.
-        // https://github.com/ggml-org/llama.cpp/blob/b11232/tools/server/server-common.cpp#L1298
+        // https://github.com/ggml-org/llama.cpp/blob/b11351/tools/server/server-common.cpp#L1322
         inputs.add_generation_prompt = true;
 
         // prefill_assistant default on: trailing assistant becomes a continuation.
-        // https://github.com/ggml-org/llama.cpp/blob/b11232/tools/server/server-common.cpp#L1302-L1318
+        // https://github.com/ggml-org/llama.cpp/blob/b11351/tools/server/server-common.cpp#L1326-L1342
         if (!inputs.messages.empty() && inputs.messages.back().role == "assistant") {
             try {
                 if (inputs.messages.size() >= 2 && inputs.messages[inputs.messages.size() - 2].role == "assistant") {
@@ -50,14 +50,14 @@ extern "C" int ot_chat_apply(const void * model_v, const char * messages_json, c
         }
 
         // llama-server defaults.
-        // https://github.com/ggml-org/llama.cpp/blob/b11232/common/common.h#L650
+        // https://github.com/ggml-org/llama.cpp/blob/b11351/common/common.h#L651
         inputs.reasoning_format = COMMON_REASONING_FORMAT_DEEPSEEK;
-        // https://github.com/ggml-org/llama.cpp/blob/b11232/common/arg.cpp#L958-L960
+        // https://github.com/ggml-org/llama.cpp/blob/b11351/common/arg.cpp#L961-L963
         inputs.chat_template_kwargs["preserve_reasoning"] = "true";
 
         // ollama's llamaServerChatTemplateKwargs: kwargs only when think is set.
         // Values are JSON-encoded (chat.cpp parses them with json::parse).
-        // https://github.com/ollama/ollama/blob/v0.35.1/llm/llama_server.go#L2296-L2310
+        // https://github.com/ollama/ollama/blob/v0.40.0/llm/llama_server.go#L2296-L2310
         if (think_set) {
             inputs.chat_template_kwargs["enable_thinking"] = enable_thinking ? "true" : "false";
             if (reasoning_effort != nullptr && reasoning_effort[0] != '\0') {
@@ -70,8 +70,8 @@ extern "C" int ot_chat_apply(const void * model_v, const char * messages_json, c
         auto tmpls = common_chat_templates_init(model, "");
 
         // Without a think kwarg, enable_thinking is derived from the template.
-        // https://github.com/ggml-org/llama.cpp/blob/b11232/tools/server/server-context.cpp#L1465-L1476
-        // https://github.com/ggml-org/llama.cpp/blob/b11232/tools/server/server-common.cpp#L1339-L1346
+        // https://github.com/ggml-org/llama.cpp/blob/b11351/tools/server/server-context.cpp#L1454-L1465
+        // https://github.com/ggml-org/llama.cpp/blob/b11351/tools/server/server-common.cpp#L1339-L1346
         inputs.enable_thinking = think_set
             ? (enable_thinking != 0)
             : common_chat_templates_support_enable_thinking(tmpls.get());

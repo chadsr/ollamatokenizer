@@ -50,7 +50,7 @@ static void ot_llama_silence(void) {
 
 // add_bos: whether tokenize(add_special=true) prepends BOS. Matches ollama's
 // tokenizerAddsBOS() — llama.cpp forces add_bos for lfm2/gemma4 at load time.
-// https://github.com/ollama/ollama/blob/v0.35.1/llm/llama_server.go#L260-L280
+// https://github.com/ollama/ollama/blob/v0.40.0/llm/llama_server.go#L260-L280
 static int ot_llama_add_bos(const void* vocab) {
 	return (int) llama_vocab_get_add_bos((const struct llama_vocab*) vocab);
 }
@@ -149,7 +149,7 @@ func cbool(b bool) C.int {
 var empty [1]byte // sentinel pointer for empty input
 
 // serverMessage is the message JSON ollama posts to llama-server.
-// https://github.com/ollama/ollama/blob/v0.35.1/llm/llama_server.go#L2312-L2360
+// https://github.com/ollama/ollama/blob/v0.40.0/llm/llama_server.go#L2312-L2360
 type serverMessage struct {
 	Role       string           `json:"role"`
 	Content    string           `json:"content"`
@@ -159,7 +159,7 @@ type serverMessage struct {
 }
 
 // serverToolCall mirrors llamaServerChatToolCall.
-// https://github.com/ollama/ollama/blob/v0.35.1/llm/llama_server.go#L2197-L2205
+// https://github.com/ollama/ollama/blob/v0.40.0/llm/llama_server.go#L2197-L2205
 type serverToolCall struct {
 	ID       string `json:"id,omitempty"`
 	Index    int    `json:"index"`
@@ -170,9 +170,8 @@ type serverToolCall struct {
 	} `json:"function"`
 }
 
-// serverMessages marshals messages like llamaServerChatMessage (stringified
-// tool-call arguments).
-// https://github.com/ollama/ollama/blob/v0.35.1/llm/llama_server.go#L2304-L2330
+// serverMessages marshals messages like llamaServerChatMessage.
+// https://github.com/ollama/ollama/blob/v0.40.0/llm/llama_server.go#L2304-L2330
 func serverMessages(msgs []api.Message) ([]serverMessage, error) {
 	out := make([]serverMessage, len(msgs))
 	for i, m := range msgs {
@@ -201,7 +200,7 @@ func serverMessages(msgs []api.Message) ([]serverMessage, error) {
 }
 
 // RenderChatJinja applies the GGUF chat template via the shim.
-// https://github.com/ollama/ollama/blob/v0.35.1/llm/llama_server.go#L1945-L1986
+// https://github.com/ollama/ollama/blob/v0.40.0/llm/llama_server.go#L1945-L1986
 func (c *cgoVocab) RenderChatJinja(msgs []api.Message, tools []api.Tool, think *api.ThinkValue) (string, error) {
 	messages, err := serverMessages(msgs)
 	if err != nil {
@@ -226,7 +225,7 @@ func (c *cgoVocab) RenderChatJinja(msgs []api.Message, tools []api.Tool, think *
 	}
 
 	// llamaServerChatTemplateKwargs: kwargs only when think is set.
-	// https://github.com/ollama/ollama/blob/v0.35.1/llm/llama_server.go#L2296-L2310
+	// https://github.com/ollama/ollama/blob/v0.40.0/llm/llama_server.go#L2296-L2310
 	thinkSet, enableThinking := 0, 0
 	var cEffort *C.char
 	if think != nil {

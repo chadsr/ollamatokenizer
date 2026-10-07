@@ -36,7 +36,7 @@ type Tokenizer struct {
 }
 
 // New loads a model's vocab-only GGUF via cgo and ollama metadata via server.GetModel.
-// https://github.com/ollama/ollama/blob/v0.35.1/server/images.go#L681
+// https://github.com/ollama/ollama/blob/v0.40.0/server/images.go#L706
 func New(name string) (*Tokenizer, error) {
 	m, err := server.GetModel(name)
 	if err != nil {
@@ -65,7 +65,7 @@ func (t *Tokenizer) Tokenize(text string, addSpecial, parseSpecial bool) ([]int3
 }
 
 // genericThinking mirrors Model.genericThinking (renderer descriptors only).
-// https://github.com/ollama/ollama/blob/v0.35.1/server/model_thinking.go#L98-L103
+// https://github.com/ollama/ollama/blob/v0.40.0/server/model_thinking.go#L98-L103
 func genericThinking(m *server.Model) *modelname.Thinking {
 	if m == nil || m.Config.Renderer == "" || shouldUseHarmony(m) {
 		return nil
@@ -74,8 +74,8 @@ func genericThinking(m *server.Model) *modelname.Thinking {
 }
 
 // resolveThink mirrors the handlers' think resolution.
-// https://github.com/ollama/ollama/blob/v0.35.1/server/routes.go#L453-L481
-// https://github.com/ollama/ollama/blob/v0.35.1/server/routes.go#L2803-L2841
+// https://github.com/ollama/ollama/blob/v0.40.0/server/routes.go#L509-L536
+// https://github.com/ollama/ollama/blob/v0.40.0/server/routes.go#L3087-L3125
 func (t *Tokenizer) resolveThink(reqThink *api.ThinkValue) (*api.ThinkValue, error) {
 	thinking := genericThinking(t.model)
 	if thinking == nil {
@@ -96,7 +96,7 @@ func (t *Tokenizer) resolveThink(reqThink *api.ThinkValue) (*api.ThinkValue, err
 }
 
 // renderPrompt mirrors server.renderPrompt, with native Jinja dispatched inside.
-// https://github.com/ollama/ollama/blob/v0.35.1/server/prompt.go#L135-L155
+// https://github.com/ollama/ollama/blob/v0.40.0/server/prompt.go#L135-L155
 func (t *Tokenizer) renderPrompt(msgs []api.Message, tools []api.Tool, think *api.ThinkValue) (string, error) {
 	if t.model.Config.Renderer != "" {
 		rendered, err := renderers.RenderWithRenderer(resolveRendererName(t.model), msgs, tools, think)
@@ -127,9 +127,8 @@ func (t *Tokenizer) renderPrompt(msgs []api.Message, tools []api.Tool, think *ap
 	return b.String(), nil
 }
 
-// nativeJinja is chatModeForModel(m)==native, collapsed. Drops IsMLX and the
-// OLLAMA_GO_TEMPLATE knob (defaults match).
-// https://github.com/ollama/ollama/blob/v0.35.1/server/routes.go#L2536-L2565
+// nativeJinja is chatModeForModel(m)==native, collapsed.
+// https://github.com/ollama/ollama/blob/v0.40.0/server/routes.go#L2809-L2838
 func nativeJinja(m *server.Model) bool {
 	if m == nil || !m.HasChatTemplate {
 		return false
@@ -141,7 +140,7 @@ func nativeJinja(m *server.Model) bool {
 }
 
 // renderNativeJinja applies the GGUF chat template (see RenderChatJinja).
-// https://github.com/ollama/ollama/blob/v0.35.1/llm/llama_server.go#L1945-L1986
+// https://github.com/ollama/ollama/blob/v0.40.0/llm/llama_server.go#L1945-L1986
 func (t *Tokenizer) renderNativeJinja(msgs []api.Message, tools []api.Tool, think *api.ThinkValue) (string, error) {
 	rendered, err := t.tok.RenderChatJinja(msgs, tools, think)
 	if err != nil {
@@ -151,7 +150,7 @@ func (t *Tokenizer) renderNativeJinja(msgs []api.Message, tools []api.Tool, thin
 }
 
 // completionPrompt strips a textual BOS when the tokenizer adds BOS itself.
-// https://github.com/ollama/ollama/blob/v0.35.1/llm/llama_server.go#L246-L258
+// https://github.com/ollama/ollama/blob/v0.40.0/llm/llama_server.go#L246-L258
 func (t *Tokenizer) completionPrompt(prompt string) string {
 	if t.tok.AddBOS() {
 		if leadingBOS := renderers.LeadingBOSForRenderer(resolveRendererName(t.model)); leadingBOS != "" && strings.HasPrefix(prompt, leadingBOS) {
@@ -165,7 +164,7 @@ func (t *Tokenizer) completionPrompt(prompt string) string {
 }
 
 // filterThinkTags strips <think> from prior assistant turns for qwen3 / deepseek-r1.
-// https://github.com/ollama/ollama/blob/v0.35.1/server/routes.go#L3251-L3282
+// https://github.com/ollama/ollama/blob/v0.40.0/server/routes.go#L3537-L3563
 func filterThinkTags(msgs []api.Message, m *server.Model) []api.Message {
 	if m.Config.ModelFamily == "qwen3" || modelname.ParseName(m.Name).Model == "deepseek-r1" {
 		finalUserIndex := -1
@@ -189,7 +188,7 @@ func filterThinkTags(msgs []api.Message, m *server.Model) []api.Message {
 }
 
 // shouldUseHarmony mirrors server.shouldUseHarmony.
-// https://github.com/ollama/ollama/blob/v0.35.1/server/routes.go#L78-L90
+// https://github.com/ollama/ollama/blob/v0.40.0/server/routes.go#L79-L91
 func shouldUseHarmony(m *server.Model) bool {
 	if slices.Contains([]string{"gptoss", "gpt-oss"}, m.Config.ModelFamily) {
 		if m.Template.Contains("<|start|>") && m.Template.Contains("<|end|>") {
@@ -200,7 +199,7 @@ func shouldUseHarmony(m *server.Model) bool {
 }
 
 // mapHarmonyThink maps "max" to "high" (harmony has no max level).
-// https://github.com/ollama/ollama/blob/v0.35.1/server/routes.go#L483-L491
+// https://github.com/ollama/ollama/blob/v0.40.0/server/routes.go#L539-L547
 func mapHarmonyThink(think *api.ThinkValue) {
 	if think == nil {
 		return
@@ -211,7 +210,7 @@ func mapHarmonyThink(think *api.ThinkValue) {
 }
 
 // processTools mirrors the chat handler's harmony + parser setup.
-// https://github.com/ollama/ollama/blob/v0.35.1/server/routes.go#L2866-L2897
+// https://github.com/ollama/ollama/blob/v0.40.0/server/routes.go#L3150-L3181
 func processTools(m *server.Model, tools []api.Tool, msgs []api.Message, think *api.ThinkValue) []api.Tool {
 	if shouldUseHarmony(m) {
 		mapHarmonyThink(think)
@@ -235,7 +234,7 @@ func processTools(m *server.Model, tools []api.Tool, msgs []api.Message, think *
 
 // TokenizeGenerate mirrors /api/generate's prompt assembly (no truncation).
 // Unsupported: Suffix, Template, Raw, Context, Images.
-// https://github.com/ollama/ollama/blob/v0.35.1/server/routes.go#L453-L641
+// https://github.com/ollama/ollama/blob/v0.40.0/server/routes.go#L509-L686
 func (t *Tokenizer) TokenizeGenerate(req api.GenerateRequest) ([]int32, error) {
 	if req.Suffix != "" {
 		return nil, fmt.Errorf(errPfx+"suffix (insert mode) is not implemented: %w", ErrNotImplemented)
@@ -258,7 +257,7 @@ func (t *Tokenizer) TokenizeGenerate(req api.GenerateRequest) ([]int32, error) {
 		return nil, err
 	}
 	// Generate passes no tools, so the parser cannot affect the prompt
-	// (routes.go#L483-L502); only the harmony think mapping applies.
+	// (routes.go#L539-L557); only the harmony think mapping applies.
 	if shouldUseHarmony(t.model) {
 		mapHarmonyThink(think)
 	}
@@ -280,7 +279,7 @@ func (t *Tokenizer) TokenizeGenerate(req api.GenerateRequest) ([]int32, error) {
 }
 
 // TokenizeChat mirrors /api/chat's prompt assembly (no truncation).
-// https://github.com/ollama/ollama/blob/v0.35.1/server/routes.go#L2803-L2910
+// https://github.com/ollama/ollama/blob/v0.40.0/server/routes.go#L3087-L3193
 func (t *Tokenizer) TokenizeChat(req api.ChatRequest) ([]int32, error) {
 	msgs := append(t.model.Messages, req.Messages...)
 	if len(req.Messages) > 0 && req.Messages[0].Role != "system" && t.model.System != "" {
@@ -311,7 +310,7 @@ func (t *Tokenizer) TokenizeChat(req api.ChatRequest) ([]int32, error) {
 }
 
 // Gemma4 renderer resolution
-// https://github.com/ollama/ollama/blob/v0.35.1/server/renderer_resolution.go#L21-L91
+// https://github.com/ollama/ollama/blob/v0.40.0/server/renderer_resolution.go#L21-L91
 const (
 	gemma4RendererLegacy         = "gemma4"
 	gemma4RendererSmall          = "gemma4-small"
@@ -319,7 +318,7 @@ const (
 	gemma4LargeMinParameterCount = 12_000_000_000
 )
 
-// https://github.com/ollama/ollama/blob/v0.35.1/server/renderer_resolution.go#L21-L32
+// https://github.com/ollama/ollama/blob/v0.40.0/server/renderer_resolution.go#L21-L32
 func resolveRendererName(m *server.Model) string {
 	if m == nil || m.Config.Renderer == "" {
 		return ""
@@ -332,7 +331,7 @@ func resolveRendererName(m *server.Model) string {
 	}
 }
 
-// https://github.com/ollama/ollama/blob/v0.35.1/server/renderer_resolution.go#L34-L55
+// https://github.com/ollama/ollama/blob/v0.40.0/server/renderer_resolution.go#L34-L55
 func resolveGemma4Renderer(m *server.Model) string {
 	if m == nil || m.Config.Renderer != gemma4RendererLegacy {
 		if m == nil {
@@ -352,7 +351,7 @@ func resolveGemma4Renderer(m *server.Model) string {
 	return gemma4RendererSmall
 }
 
-// https://github.com/ollama/ollama/blob/v0.35.1/server/renderer_resolution.go#L57-L63
+// https://github.com/ollama/ollama/blob/v0.40.0/server/renderer_resolution.go#L57-L63
 func gemma4RendererForParameterCount(parameterCount uint64) string {
 	if parameterCount >= gemma4LargeMinParameterCount {
 		return gemma4RendererLarge
@@ -360,7 +359,7 @@ func gemma4RendererForParameterCount(parameterCount uint64) string {
 	return gemma4RendererSmall
 }
 
-// https://github.com/ollama/ollama/blob/v0.35.1/server/renderer_resolution.go#L65-L75
+// https://github.com/ollama/ollama/blob/v0.40.0/server/renderer_resolution.go#L65-L75
 func gemma4RendererFromName(name string) (string, bool) {
 	lower := strings.ToLower(name)
 	switch {
@@ -373,7 +372,7 @@ func gemma4RendererFromName(name string) (string, bool) {
 	}
 }
 
-// https://github.com/ollama/ollama/blob/v0.35.1/server/renderer_resolution.go#L77-L91
+// https://github.com/ollama/ollama/blob/v0.40.0/server/renderer_resolution.go#L77-L91
 func parseHumanParameterCount(s string) (uint64, bool) {
 	if s == "" {
 		return 0, false
