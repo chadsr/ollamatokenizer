@@ -4,7 +4,7 @@ go 1.26.0
 
 require (
 	github.com/gin-gonic/gin v1.12.0
-	github.com/ollama/ollama v0.40.0
+	github.com/ollama/ollama v0.40.4
 	github.com/spf13/cobra v1.10.2
 )
 
