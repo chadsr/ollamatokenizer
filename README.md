@@ -6,9 +6,7 @@
 
 HTTP server exposing Ollama's internal tokenization as API endpoints.
 
-Token IDs are byte-identical to a running Ollama server: the service links
-against Ollama's bundled `libllama.so` and loads each model's GGUF vocabulary
-**vocab-only** (`llama_model_load` with `vocab_only=true`).
+Token IDs are byte-identical to a running Ollama server: the service links against Ollama's bundled `libllama.so` and loads each model's GGUF vocabulary **vocab-only** (`llama_model_load` with `vocab_only=true`).
 
 ## Build & Run
 
