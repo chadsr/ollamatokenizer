@@ -168,7 +168,11 @@ jobs:
           path: ${{ env.OLLAMA_MODELS }}
           key: ${{ runner.os }}-ollama-${{ steps.digest.outputs.hash }}
 
-      # The test binary loads libllama at runtime from the default /usr/lib/ollama;
-      # point it at the pinned libs we extracted so our tokenizer .so matches go.mod.
       - name: go test
-        run: LD_LIBRARY_PATH="$PWD/ollama-libs" make build OLLAMA_LIB_DIR=./ollama-libs && LD_LIBRARY_PATH="$PWD/ollama-libs" OLLAMATOKENIZER_TEST_MODELS=tinyllama:1.1b go test -v -timeout 20m
+        run: LD_LIBRARY_PATH="$PWD/ollama-libs" make build OLLAMA_LIB_DIR=./ollama-libs && LD_LIBRARY_PATH="$PWD/ollama-libs" OLLAMATOKENIZER_TEST_MODELS=tinyllama:1.1b go test -v -race -coverprofile=coverage.txt -timeout 20m
+
+      - name: Upload coverage reports to Codecov
+        uses: codecov/codecov-action@v5
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          slug: chadsr/ollamatokenizer
